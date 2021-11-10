@@ -24,11 +24,11 @@ public abstract class BaseFastDistanceData implements Serializable, Cloneable {
     public final Row[] rows;
 
     public static Gson pGson =
-        new GsonBuilder()
-            .serializeNulls()
-            .disableHtmlEscaping()
-            .serializeSpecialFloatingPointValues()
-            .create();
+            new GsonBuilder()
+                    .serializeNulls()
+                    .disableHtmlEscaping()
+                    .serializeSpecialFloatingPointValues()
+                    .create();
 
     public Row[] getRows() {
         return rows;
@@ -42,7 +42,7 @@ public abstract class BaseFastDistanceData implements Serializable, Cloneable {
         this.rows = null == fastDistanceData.rows ? null : fastDistanceData.rows.clone();
     }
 
-    public static Row parseRowCompatible(Map <String, Object> params) {
+    public static Row parseRowCompatible(Map<String, Object> params) {
         if (params == null) {
             return null;
         }
@@ -64,12 +64,12 @@ public abstract class BaseFastDistanceData implements Serializable, Cloneable {
         return row;
     }
 
-    public static Row[] parseRowArrayCompatible(Map <String, Object> params) {
+    public static Row[] parseRowArrayCompatible(Map<String, Object> params) {
         if (params == null) {
             return null;
         }
 
-        Row[] rows = pGson.fromJson((String)params.get("rows"), Row[].class);
+        Row[] rows = pGson.fromJson((String) params.get("rows"), Row[].class);
 
         if (rows == null) {
             return null;

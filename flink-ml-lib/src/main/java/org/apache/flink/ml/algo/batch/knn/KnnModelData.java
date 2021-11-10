@@ -1,15 +1,15 @@
 package org.apache.flink.ml.algo.batch.knn;
 
-import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.ml.common.linalg.DenseMatrix;
-import org.apache.flink.ml.common.linalg.VectorUtil;
 import org.apache.flink.ml.algo.batch.knn.distance.BaseFastDistance;
 import org.apache.flink.ml.algo.batch.knn.distance.BaseFastDistanceData;
 import org.apache.flink.ml.algo.batch.knn.distance.FastDistanceVectorData;
-import org.apache.flink.shaded.curator4.com.google.common.collect.ImmutableMap;
+import org.apache.flink.ml.common.linalg.DenseMatrix;
+import org.apache.flink.ml.common.linalg.VectorUtil;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.Row;
+
+import org.apache.flink.shaded.curator4.com.google.common.collect.ImmutableMap;
 
 import java.io.Serializable;
 import java.util.ArrayList;

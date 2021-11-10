@@ -30,10 +30,14 @@ import org.apache.flink.ml.param.WithParams;
  * <p>The detail is the information of prediction result, such as the probability of each label in
  * classifier.
  */
-public interface HasPredictionDetailCol<T> extends WithParams <T> {
+public interface HasPredictionDetailCol<T> extends WithParams<T> {
 
-    Param <String> PREDICTION_DETAIL_COL = new StringParam("predictionDetailCol",
-                            "Column name of prediction result, it will include detailed info.", null, ParamValidators.notNull());
+    Param<String> PREDICTION_DETAIL_COL =
+            new StringParam(
+                    "predictionDetailCol",
+                    "Column name of prediction result, it will include detailed info.",
+                    null,
+                    ParamValidators.notNull());
 
     default String getPredictionDetailCol() {
         return get(PREDICTION_DETAIL_COL);

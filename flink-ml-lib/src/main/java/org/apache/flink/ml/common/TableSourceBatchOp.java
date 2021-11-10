@@ -25,8 +25,7 @@ import org.apache.flink.util.Preconditions;
 import java.io.IOException;
 
 /** Utility class to wrap a table as {@link BatchOperator}. */
-public final class TableSourceBatchOp
-	extends BatchOperator<TableSourceBatchOp> {
+public final class TableSourceBatchOp extends BatchOperator<TableSourceBatchOp> {
 
     public TableSourceBatchOp(Table table) {
         super(null);

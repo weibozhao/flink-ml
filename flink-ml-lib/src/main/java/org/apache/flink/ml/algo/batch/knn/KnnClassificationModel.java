@@ -11,10 +11,10 @@ import java.util.Map;
 
 /** Knn classification model fitted by KnnClassifier. */
 public class KnnClassificationModel
-        implements Model <KnnClassificationModel>, KnnPredictParams<KnnClassificationModel> {
+        implements Model<KnnClassificationModel>, KnnPredictParams<KnnClassificationModel> {
 
     private static final long serialVersionUID = 1303892137143865652L;
-    protected Map <Param <?>, Object> params;
+    protected Map<Param<?>, Object> params;
 
     private Table modelData;
 
@@ -28,7 +28,7 @@ public class KnnClassificationModel
      *
      * @param params parameters for algorithm.
      */
-    public KnnClassificationModel(Map<Param <?>, Object> params) {
+    public KnnClassificationModel(Map<Param<?>, Object> params) {
         this.params = params;
     }
 
@@ -51,14 +51,11 @@ public class KnnClassificationModel
         return new KnnPredictBatchOp(this.params).transform(inputs[0], modelData);
     }
 
-    /**
-     *
-     * @return parameters for algorithm.
-     */
+    /** @return parameters for algorithm. */
     @Override
-    public Map <Param <?>, Object> getParamMap() {
+    public Map<Param<?>, Object> getParamMap() {
         if (null == this.params) {
-            this.params = new HashMap <>(1);
+            this.params = new HashMap<>(1);
         }
         return this.params;
     }

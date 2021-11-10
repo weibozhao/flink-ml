@@ -7,9 +7,10 @@ import org.apache.flink.ml.common.linalg.MatVecOp;
 import org.apache.flink.ml.common.linalg.SparseVector;
 import org.apache.flink.ml.common.linalg.Vector;
 import org.apache.flink.ml.common.linalg.VectorUtil;
-import org.apache.flink.shaded.curator4.com.google.common.collect.Iterables;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Preconditions;
+
+import org.apache.flink.shaded.curator4.com.google.common.collect.Iterables;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -219,7 +220,8 @@ public abstract class BaseFastDistance implements ContinuousDistance {
      *     created, otherwise, the given res is refilled.
      * @return the distances.
      */
-    public DenseMatrix calc(BaseFastDistanceData left, BaseFastDistanceData right, DenseMatrix res) {
+    public DenseMatrix calc(
+            BaseFastDistanceData left, BaseFastDistanceData right, DenseMatrix res) {
         if (left instanceof FastDistanceVectorData) {
             if (right instanceof FastDistanceVectorData) {
                 FastDistanceVectorData leftData = (FastDistanceVectorData) left;
@@ -291,7 +293,6 @@ public abstract class BaseFastDistance implements ContinuousDistance {
         }
         return res;
     }
-
 
     /**
      * get sub row with special indices.

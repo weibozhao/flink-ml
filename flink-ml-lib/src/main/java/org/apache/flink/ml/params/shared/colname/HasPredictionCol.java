@@ -25,10 +25,11 @@ import org.apache.flink.ml.param.StringParam;
 import org.apache.flink.ml.param.WithParams;
 
 /** An interface for classes with a parameter specifying the column name of the prediction. */
-public interface HasPredictionCol<T> extends WithParams <T> {
+public interface HasPredictionCol<T> extends WithParams<T> {
 
-    Param <String> PREDICTION_COL = new StringParam("predictionCol",
-        "Column name of prediction.", null, ParamValidators.notNull());
+    Param<String> PREDICTION_COL =
+            new StringParam(
+                    "predictionCol", "Column name of prediction.", null, ParamValidators.notNull());
 
     default String getPredictionCol() {
         return get(PREDICTION_COL);

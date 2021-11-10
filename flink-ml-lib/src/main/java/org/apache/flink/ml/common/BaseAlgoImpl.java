@@ -40,11 +40,11 @@ import java.util.Map;
  *
  * @param <T> The class type of the {@link BaseAlgoImpl} implementation itself
  */
-public abstract class BaseAlgoImpl<T extends BaseAlgoImpl <T>>
-        implements AlgoOperator <T>, WithParams <T> {
+public abstract class BaseAlgoImpl<T extends BaseAlgoImpl<T>>
+        implements AlgoOperator<T>, WithParams<T> {
 
     /** Params for algorithms. */
-    private Map<Param <?>, Object> params;
+    private Map<Param<?>, Object> params;
 
     /** The table held by operator. */
     private transient Table output = null;
@@ -53,10 +53,10 @@ public abstract class BaseAlgoImpl<T extends BaseAlgoImpl <T>>
     private transient Table[] sideOutputs = null;
 
     /** Construct the operator with the initial Params. */
-    protected BaseAlgoImpl(Map<Param <?>, Object> params) {
+    protected BaseAlgoImpl(Map<Param<?>, Object> params) {
         this.params = new HashMap<>();
         if (null != params) {
-            for (Map.Entry<Param <?>, Object> entry : params.entrySet()) {
+            for (Map.Entry<Param<?>, Object> entry : params.entrySet()) {
                 this.params.put(entry.getKey(), entry.getValue());
             }
         }
@@ -64,7 +64,7 @@ public abstract class BaseAlgoImpl<T extends BaseAlgoImpl <T>>
     }
 
     @Override
-    public Map<Param <?>, Object> getParamMap() {
+    public Map<Param<?>, Object> getParamMap() {
         return this.params;
     }
 

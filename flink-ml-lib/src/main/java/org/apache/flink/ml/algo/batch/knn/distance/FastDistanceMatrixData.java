@@ -31,7 +31,6 @@ public class FastDistanceMatrixData extends BaseFastDistanceData {
      */
     public DenseMatrix label;
 
-
     /**
      * Constructor, initialize the vector data.
      *
@@ -75,11 +74,12 @@ public class FastDistanceMatrixData extends BaseFastDistanceData {
 
     /**
      * serialization of FastDistanceMatrixData.
+     *
      * @return json string.
      */
     @Override
     public String toString() {
-        Map <String, Object> params = new HashMap <>(3);
+        Map<String, Object> params = new HashMap<>(3);
         params.put("vectors", pGson.toJson(vectors));
         params.put("label", pGson.toJson(label));
         params.put("rows", pGson.toJson(rows));
@@ -93,11 +93,11 @@ public class FastDistanceMatrixData extends BaseFastDistanceData {
      * @return FastDistanceMatrixData
      */
     public static FastDistanceMatrixData fromString(String modelStr) {
-        Map <String, Object> params = pGson.fromJson(modelStr, HashMap.class);
+        Map<String, Object> params = pGson.fromJson(modelStr, HashMap.class);
         Row[] row = parseRowArrayCompatible(params);
-        DenseMatrix vectors = pGson.fromJson((String)params.get("vectors"), DenseMatrix.class);
+        DenseMatrix vectors = pGson.fromJson((String) params.get("vectors"), DenseMatrix.class);
         FastDistanceMatrixData matrixData = new FastDistanceMatrixData(vectors, row);
-        matrixData.label = pGson.fromJson((String)params.get("label"), DenseMatrix.class);
+        matrixData.label = pGson.fromJson((String) params.get("label"), DenseMatrix.class);
         return matrixData;
     }
 }

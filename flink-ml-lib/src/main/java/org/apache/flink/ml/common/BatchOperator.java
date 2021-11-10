@@ -30,14 +30,14 @@ import java.util.Map;
  *
  * <p>This class extends {@link BaseAlgoImpl} to support data transmission between BatchOperators.
  */
-public abstract class BatchOperator<T extends BatchOperator <T>> extends BaseAlgoImpl<T> {
+public abstract class BatchOperator<T extends BatchOperator<T>> extends BaseAlgoImpl<T> {
 
     /**
      * The constructor of BatchOperator.
      *
      * @param params the initial Params.
      */
-    protected BatchOperator(Map<Param <?>, Object> params) {
+    protected BatchOperator(Map<Param<?>, Object> params) {
         super(params);
     }
 
@@ -62,7 +62,7 @@ public abstract class BatchOperator<T extends BatchOperator <T>> extends BaseAlg
      * @param <OP> type of BatchOperator returned
      * @return the linked next
      */
-    public final <OP extends BatchOperator <?>> OP link(OP next) {
+    public final <OP extends BatchOperator<?>> OP link(OP next) {
         next.linkFrom(this);
         return next;
     }
@@ -91,7 +91,7 @@ public abstract class BatchOperator<T extends BatchOperator <T>> extends BaseAlg
      * @return the linked this object
      */
     @SuppressWarnings("unchecked")
-    public final T linkFrom(BatchOperator <?>... inputs) {
+    public final T linkFrom(BatchOperator<?>... inputs) {
         Table[] inputTables = new Table[inputs.length];
         for (int i = 0; i < inputs.length; i++) {
             inputTables[i] = inputs[i].getOutput();

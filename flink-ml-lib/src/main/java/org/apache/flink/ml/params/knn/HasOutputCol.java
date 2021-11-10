@@ -33,9 +33,10 @@ import org.apache.flink.ml.params.shared.colname.HasOutputColsDefaultAsNull;
  * @see HasOutputColDefaultAsNull
  * @see HasOutputColsDefaultAsNull
  */
-public interface HasOutputCol<T> extends WithParams <T> {
+public interface HasOutputCol<T> extends WithParams<T> {
 
-    Param <String> OUTPUT_COL = new StringParam("outputCol", "Name of the output column", null, null);
+    Param<String> OUTPUT_COL =
+            new StringParam("outputCol", "Name of the output column", null, null);
 
     default String getOutputCol() {
         return get(OUTPUT_COL);

@@ -67,7 +67,7 @@ public class ParamUtil {
      * @param <T> class
      * @return enum
      */
-    public static <T extends Enum<?>> T searchEnum(Param <T> paramInfo, String search) {
+    public static <T extends Enum<?>> T searchEnum(Param<T> paramInfo, String search) {
         return searchEnum(paramInfo.clazz, search, paramInfo.name);
     }
 

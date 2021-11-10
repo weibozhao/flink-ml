@@ -129,11 +129,12 @@ public class FastDistanceSparseData extends BaseFastDistanceData {
 
     /**
      * serialization of FastDistanceSparseData.
+     *
      * @return json string.
      */
     @Override
     public String toString() {
-        Map <String, Object> params = new HashMap <>(5);
+        Map<String, Object> params = new HashMap<>(5);
         params.put("indices", pGson.toJson(indices));
         params.put("values", pGson.toJson(values));
         params.put("vectorNum", pGson.toJson(vectorNum));
@@ -149,17 +150,17 @@ public class FastDistanceSparseData extends BaseFastDistanceData {
      * @return FastDistanceSparseData
      */
     public static FastDistanceSparseData fromString(String modelStr) {
-        Map <String, Object> params = pGson.fromJson(modelStr, HashMap.class);
-        int[][] indices = pGson.fromJson((String)params.get("indices"), int[][].class);
-        double[][] values = pGson.fromJson((String)params.get("values"), double[][].class);
+        Map<String, Object> params = pGson.fromJson(modelStr, HashMap.class);
+        int[][] indices = pGson.fromJson((String) params.get("indices"), int[][].class);
+        double[][] values = pGson.fromJson((String) params.get("values"), double[][].class);
 
         FastDistanceSparseData sparseData =
                 new FastDistanceSparseData(
                         indices,
                         values,
-                    pGson.fromJson((String)params.get("vectorNum"), int.class),
+                        pGson.fromJson((String) params.get("vectorNum"), int.class),
                         parseRowArrayCompatible(params));
-        sparseData.label = pGson.fromJson((String)params.get("label"), DenseMatrix.class);
+        sparseData.label = pGson.fromJson((String) params.get("label"), DenseMatrix.class);
 
         return sparseData;
     }

@@ -31,10 +31,11 @@ import org.apache.flink.ml.param.WithParams;
  * @see HasSelectedCols
  * @see HasSelectedColsDefaultAsNull
  */
-public interface HasSelectedColDefaultAsNull<T> extends WithParams <T> {
+public interface HasSelectedColDefaultAsNull<T> extends WithParams<T> {
 
-    Param <String> SELECTED_COL = new StringParam("selectedCol",
-        "Name of the selected column used for processing", null);
+    Param<String> SELECTED_COL =
+            new StringParam("selectedCol", "Name of the selected column used for processing", null);
+
     default String getSelectedCol() {
         return get(SELECTED_COL);
     }

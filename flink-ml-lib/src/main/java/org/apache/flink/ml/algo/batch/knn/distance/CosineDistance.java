@@ -137,9 +137,7 @@ public class CosineDistance extends BaseFastDistance {
     }
 
     static void baseCalc(
-        FastDistanceVectorData leftVector,
-        FastDistanceMatrixData rightVectors,
-        double[] res) {
+            FastDistanceVectorData leftVector, FastDistanceMatrixData rightVectors, double[] res) {
         Arrays.fill(res, 1);
         BLAS.gemv(-1, rightVectors.vectors, true, leftVector.vector, 1.0, new DenseVector(res));
     }
@@ -163,10 +161,10 @@ public class CosineDistance extends BaseFastDistance {
     }
 
     static void baseCalc(
-        FastDistanceVectorData left,
-        FastDistanceSparseData right,
-        double[] res,
-        SerializableFunction <Double, Double> function) {
+            FastDistanceVectorData left,
+            FastDistanceSparseData right,
+            double[] res,
+            SerializableFunction<Double, Double> function) {
         Arrays.fill(res, 1.0);
         int[][] rightIndices = right.getIndices();
         double[][] rightValues = right.getValues();
@@ -201,10 +199,10 @@ public class CosineDistance extends BaseFastDistance {
     }
 
     static void baseCalc(
-        FastDistanceSparseData left,
-        FastDistanceSparseData right,
-        double[] res,
-        SerializableFunction <Double, Double> function) {
+            FastDistanceSparseData left,
+            FastDistanceSparseData right,
+            double[] res,
+            SerializableFunction<Double, Double> function) {
         Arrays.fill(res, 1.0);
         int[][] leftIndices = left.getIndices();
         int[][] rightIndices = right.getIndices();

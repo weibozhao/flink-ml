@@ -18,6 +18,7 @@
  */
 
 package org.apache.flink.ml.params.shared.colname;
+
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.param.WithParams;
 
@@ -28,10 +29,15 @@ import org.apache.flink.ml.param.WithParams;
  * @see HasSelectedColDefaultAsNull
  * @see HasSelectedColsDefaultAsNull
  */
-public interface HasSelectedCols<T> extends WithParams <T> {
+public interface HasSelectedCols<T> extends WithParams<T> {
 
-    Param <String[]> SELECTED_COLS = new Param <>("selectedCols", String[].class,
-                   "Names of the columns used for processing", null, null);
+    Param<String[]> SELECTED_COLS =
+            new Param<>(
+                    "selectedCols",
+                    String[].class,
+                    "Names of the columns used for processing",
+                    null,
+                    null);
 
     default String[] getSelectedCols() {
         return get(SELECTED_COLS);
