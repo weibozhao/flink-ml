@@ -20,9 +20,14 @@ package org.apache.flink.ml.common.datastream;
 
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
+import org.apache.flink.table.api.Schema;
+import org.apache.flink.table.api.Schema.UnresolvedPhysicalColumn;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.runtime.typeutils.ExternalTypeInfo;
+import org.apache.flink.table.types.DataType;
+
+import org.apache.commons.lang3.ArrayUtils;
 
 /** Utility class for table-related operations. */
 public class TableUtils {
@@ -37,5 +42,27 @@ public class TableUtils {
             names[i] = column.getName();
         }
         return new RowTypeInfo(types, names);
+    }
+
+    public static RowTypeInfo getRowTypeInfo(Schema schema) {
+        TypeInformation<?>[] types = new TypeInformation<?>[schema.getColumns().size()];
+        String[] names = new String[schema.getColumns().size()];
+
+        for (int i = 0; i < schema.getColumns().size(); i++) {
+            UnresolvedPhysicalColumn column = (UnresolvedPhysicalColumn) schema.getColumns().get(i);
+            types[i] = ExternalTypeInfo.of(column.getDataType().getClass());
+            names[i] = column.getName();
+        }
+        return new RowTypeInfo(types, names);
+    }
+
+    public static ResolvedSchema getOutputSchema(
+            ResolvedSchema inputSchema, String[] resultCols, DataType[] resultTypes) {
+        String[] reservedCols = inputSchema.getColumnNames().toArray(new String[0]);
+        DataType[] reservedTypes = inputSchema.getColumnDataTypes().toArray(new DataType[0]);
+
+        return ResolvedSchema.physical(
+                ArrayUtils.addAll(reservedCols, resultCols),
+                ArrayUtils.addAll(reservedTypes, resultTypes));
     }
 }
