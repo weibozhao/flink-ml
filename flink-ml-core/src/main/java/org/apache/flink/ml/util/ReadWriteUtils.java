@@ -123,24 +123,6 @@ public class ReadWriteUtils {
         saveMetadata(stage, path, new HashMap<>());
     }
 
-    /** Returns a subdirectory of the given path for saving/loading model data. */
-    private static String getDataPath(String path) {
-        return Paths.get(path, "data").toString();
-    }
-
-    /** Returns all data files under the given path as a list of paths. */
-    private static org.apache.flink.core.fs.Path[] getDataPaths(String path) {
-        String dataPath = getDataPath(path);
-        File[] files = new File(dataPath).listFiles();
-
-        org.apache.flink.core.fs.Path[] paths = new org.apache.flink.core.fs.Path[files.length];
-        for (int i = 0; i < paths.length; i++) {
-            paths[i] = org.apache.flink.core.fs.Path.fromLocalFile(files[i]);
-        }
-
-        return paths;
-    }
-
     /**
      * Loads the metadata from the metadata file under the given path.
      *
@@ -401,6 +383,16 @@ public class ReadWriteUtils {
         }
     }
 
+    /** Assigns model version for every model data when sinking to files. */
+    private static class ModelVersionAssigner<T> extends BasePathBucketAssigner<T> {
+        private long modelVersion = 0L;
+
+        @Override
+        public String getBucketId(T element, Context context) {
+            return String.valueOf(modelVersion++);
+        }
+    }
+
     /**
      * Saves the model data stream to the given path using the model encoder.
      *
@@ -413,9 +405,10 @@ public class ReadWriteUtils {
             DataStream<T> model, String path, Encoder<T> modelEncoder) {
         FileSink<T> sink =
                 FileSink.forRowFormat(
-                                new org.apache.flink.core.fs.Path(getDataPath(path)), modelEncoder)
+                                new org.apache.flink.core.fs.Path(path + "/data/"), modelEncoder)
                         .withRollingPolicy(OnCheckpointRollingPolicy.build())
-                        .withBucketAssigner(new BasePathBucketAssigner<>())
+                        .withRollingPolicy(OnCheckpointRollingPolicy.build())
+                        .withBucketAssigner(new ModelVersionAssigner<>())
                         .build();
         model.sinkTo(sink);
     }
@@ -431,8 +424,33 @@ public class ReadWriteUtils {
      */
     public static <T> DataStream<T> loadModelData(
             StreamExecutionEnvironment env, String path, SimpleStreamFormat<T> modelDecoder) {
+        org.apache.flink.core.fs.Path modelPath =
+                new org.apache.flink.core.fs.Path(path + "/data/");
+        Source<T, ?, ?> source = FileSource.forRecordStreamFormat(modelDecoder, modelPath).build();
+        return env.fromSource(source, WatermarkStrategy.noWatermarks(), "modelData");
+    }
+
+    /**
+     * Loads one model data with special model version from the given path which has more than one
+     * model version. It can set parameter @modelVersion to select a special version model.
+     *
+     * @param env A StreamExecutionEnvironment instance.
+     * @param path The parent directory of the model data file.
+     * @param modelDecoder The decoder used to decode the model data.
+     * @param modelVersion Version of model in model Stream.
+     * @param <T> The class type of the model data.
+     * @return The loaded model data.
+     */
+    public static <T> DataStream<T> loadModelData(
+            StreamExecutionEnvironment env,
+            String path,
+            SimpleStreamFormat<T> modelDecoder,
+            String modelVersion) {
         Source<T, ?, ?> source =
-                FileSource.forRecordStreamFormat(modelDecoder, getDataPaths(path)).build();
+                FileSource.forRecordStreamFormat(
+                                modelDecoder,
+                                new org.apache.flink.core.fs.Path(path + "/data/" + modelVersion))
+                        .build();
         return env.fromSource(source, WatermarkStrategy.noWatermarks(), "modelData");
     }
 }
