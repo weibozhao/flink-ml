@@ -103,7 +103,7 @@ public class LogisticRegressionModel
                 (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
         DataStream<Row> inputStream = tEnv.toDataStream(inputs[0]);
         final String broadcastModelKey = "broadcastModelKey";
-        DataStream<LogisticRegressionModelData> modelDataStream =
+        DataStream<Row> modelDataStream =
                 LogisticRegressionModelData.getModelDataStream(modelDataTable);
         RowTypeInfo inputTypeInfo = TableUtils.getRowTypeInfo(inputs[0].getResolvedSchema());
         RowTypeInfo outputTypeInfo =
@@ -146,9 +146,11 @@ public class LogisticRegressionModel
         @Override
         public Row map(Row dataPoint) {
             if (coefficient == null) {
+                Row modelRow =
+                        (Row) getRuntimeContext().getBroadcastVariable(broadcastModelKey).get(0);
                 LogisticRegressionModelData modelData =
-                        (LogisticRegressionModelData)
-                                getRuntimeContext().getBroadcastVariable(broadcastModelKey).get(0);
+                        (LogisticRegressionModelData) modelRow.getField(1);
+
                 coefficient = modelData.coefficient;
             }
             DenseVector features = (DenseVector) dataPoint.getField(featuresCol);

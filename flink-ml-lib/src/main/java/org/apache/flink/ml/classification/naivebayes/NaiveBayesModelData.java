@@ -61,11 +61,24 @@ public class NaiveBayesModelData {
     /** Value of labels. */
     public DenseVector labels;
 
+    public String modelVersion;
+
     public NaiveBayesModelData(
             Map<Double, Double>[][] theta, DenseVector piArray, DenseVector labels) {
         this.theta = theta;
         this.piArray = piArray;
         this.labels = labels;
+    }
+
+    public NaiveBayesModelData(
+            Map<Double, Double>[][] theta,
+            DenseVector piArray,
+            DenseVector labels,
+            String modelVersion) {
+        this.theta = theta;
+        this.piArray = piArray;
+        this.labels = labels;
+        this.modelVersion = modelVersion;
     }
 
     public NaiveBayesModelData() {}
@@ -76,27 +89,28 @@ public class NaiveBayesModelData {
      * @param modelData The table model data.
      * @return The data stream model data.
      */
-    public static DataStream<NaiveBayesModelData> getModelDataStream(Table modelData) {
+    public static DataStream<Row> getModelDataStream(Table modelData) {
         StreamTableEnvironment tEnv =
                 (StreamTableEnvironment) ((TableImpl) modelData).getTableEnvironment();
         return tEnv.toDataStream(modelData)
                 .map(
-                        (MapFunction<Row, NaiveBayesModelData>)
+                        (MapFunction<Row, Row>)
                                 row ->
-                                        new NaiveBayesModelData(
-                                                (Map<Double, Double>[][]) row.getField(0),
-                                                (DenseVector) row.getField(1),
-                                                (DenseVector) row.getField(2)));
+                                        Row.of(
+                                                row.getField(3),
+                                                new NaiveBayesModelData(
+                                                        (Map<Double, Double>[][]) row.getField(0),
+                                                        (DenseVector) row.getField(1),
+                                                        (DenseVector) row.getField(2))));
     }
 
     /** Data encoder for the {@link NaiveBayesModelData}. */
-    public static class ModelDataEncoder implements Encoder<NaiveBayesModelData> {
+    public static class ModelDataEncoder implements Encoder<Row> {
         @Override
-        public void encode(NaiveBayesModelData modelData, OutputStream outputStream)
-                throws IOException {
+        public void encode(Row row, OutputStream outputStream) throws IOException {
             DataOutputViewStreamWrapper outputViewStreamWrapper =
                     new DataOutputViewStreamWrapper(outputStream);
-
+            NaiveBayesModelData modelData = (NaiveBayesModelData) row.getField(1);
             MapSerializer<Double, Double> mapSerializer =
                     new MapSerializer<>(DoubleSerializer.INSTANCE, DoubleSerializer.INSTANCE);
 
@@ -111,6 +125,7 @@ public class NaiveBayesModelData {
                     mapSerializer.serialize(map, outputViewStreamWrapper);
                 }
             }
+            outputViewStreamWrapper.writeChars((String) row.getField(0));
         }
     }
 
@@ -126,6 +141,7 @@ public class NaiveBayesModelData {
                     try {
                         DataInputViewStreamWrapper inputViewStreamWrapper =
                                 new DataInputViewStreamWrapper(inputStream);
+
                         MapSerializer<Double, Double> mapSerializer =
                                 new MapSerializer<>(
                                         DoubleSerializer.INSTANCE, DoubleSerializer.INSTANCE);
@@ -144,7 +160,8 @@ public class NaiveBayesModelData {
                                 theta[i][j] = mapSerializer.deserialize(inputViewStreamWrapper);
                             }
                         }
-                        return new NaiveBayesModelData(theta, piArray, labels);
+                        String modelVersion = inputViewStreamWrapper.readLine();
+                        return new NaiveBayesModelData(theta, piArray, labels, modelVersion);
                     } catch (EOFException e) {
                         return null;
                     }

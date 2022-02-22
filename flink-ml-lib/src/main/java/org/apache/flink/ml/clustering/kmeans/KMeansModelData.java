@@ -32,6 +32,7 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.internal.TableImpl;
+import org.apache.flink.types.Row;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -47,8 +48,15 @@ public class KMeansModelData {
 
     public DenseVector[] centroids;
 
+    public String modelVersion;
+
     public KMeansModelData(DenseVector[] centroids) {
         this.centroids = centroids;
+    }
+
+    public KMeansModelData(DenseVector[] centroids, String modelVersion) {
+        this.centroids = centroids;
+        this.modelVersion = modelVersion;
     }
 
     public KMeansModelData() {}
@@ -59,25 +67,27 @@ public class KMeansModelData {
      * @param modelData The table model data.
      * @return The data stream model data.
      */
-    public static DataStream<KMeansModelData> getModelDataStream(Table modelData) {
+    public static DataStream<Row> getModelDataStream(Table modelData) {
         StreamTableEnvironment tEnv =
                 (StreamTableEnvironment) ((TableImpl) modelData).getTableEnvironment();
         return tEnv.toDataStream(modelData)
-                .map(x -> new KMeansModelData((DenseVector[]) x.getField(0)));
+                .map(x -> Row.of(x.getField(1), new KMeansModelData((DenseVector[]) x.getField(0))));
     }
 
     /** Data encoder for {@link KMeansModelData}. */
-    public static class ModelDataEncoder implements Encoder<KMeansModelData> {
+    public static class ModelDataEncoder implements Encoder<Row> {
         @Override
-        public void encode(KMeansModelData modelData, OutputStream outputStream)
+        public void encode(Row row, OutputStream outputStream)
                 throws IOException {
+            KMeansModelData modelData = (KMeansModelData) row.getField(1);
             DataOutputViewStreamWrapper outputViewStreamWrapper =
                     new DataOutputViewStreamWrapper(outputStream);
             IntSerializer.INSTANCE.serialize(modelData.centroids.length, outputViewStreamWrapper);
             for (DenseVector denseVector : modelData.centroids) {
                 DenseVectorSerializer.INSTANCE.serialize(
-                        denseVector, new DataOutputViewStreamWrapper(outputStream));
+                        denseVector, outputViewStreamWrapper);
             }
+            outputViewStreamWrapper.writeChars((String) row.getField(0));
         }
     }
 
@@ -101,7 +111,8 @@ public class KMeansModelData {
                                     DenseVectorSerializer.INSTANCE.deserialize(
                                             inputViewStreamWrapper);
                         }
-                        return new KMeansModelData(centroids);
+                        String modelVersion = inputViewStreamWrapper.readLine();
+                        return new KMeansModelData(centroids, modelVersion);
                     } catch (EOFException e) {
                         return null;
                     }

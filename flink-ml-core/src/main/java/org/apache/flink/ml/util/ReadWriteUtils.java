@@ -34,6 +34,7 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.filesystem.bucketassigners.BasePathBucketAssigner;
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.OnCheckpointRollingPolicy;
+import org.apache.flink.types.Row;
 import org.apache.flink.util.InstantiationUtil;
 import org.apache.flink.util.Preconditions;
 
@@ -385,11 +386,15 @@ public class ReadWriteUtils {
 
     /** Assigns model version for every model data when sinking to files. */
     private static class ModelVersionAssigner<T> extends BasePathBucketAssigner<T> {
-        private long modelVersion = 0L;
 
         @Override
         public String getBucketId(T element, Context context) {
-            return String.valueOf(modelVersion++);
+            if (element instanceof Row) {
+                Row row = (Row) element;
+                return (String) row.getField(0);
+            } else {
+                return String.valueOf(context.currentProcessingTime());
+            }
         }
     }
 
@@ -407,7 +412,7 @@ public class ReadWriteUtils {
                 FileSink.forRowFormat(
                                 new org.apache.flink.core.fs.Path(path + "/data/"), modelEncoder)
                         .withRollingPolicy(OnCheckpointRollingPolicy.build())
-                        .withRollingPolicy(OnCheckpointRollingPolicy.build())
+                        .withBucketCheckInterval(10000L)
                         .withBucketAssigner(new ModelVersionAssigner<>())
                         .build();
         model.sinkTo(sink);

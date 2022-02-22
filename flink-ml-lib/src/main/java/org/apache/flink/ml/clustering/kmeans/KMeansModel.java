@@ -73,7 +73,7 @@ public class KMeansModel implements Model<KMeansModel>, KMeansModelParams<KMeans
 
         StreamTableEnvironment tEnv =
                 (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
-        DataStream<KMeansModelData> modelDataStream =
+        DataStream<Row> modelDataStream =
                 KMeansModelData.getModelDataStream(modelDataTable);
 
         RowTypeInfo inputTypeInfo = TableUtils.getRowTypeInfo(inputs[0].getResolvedSchema());
@@ -120,9 +120,9 @@ public class KMeansModel implements Model<KMeansModel>, KMeansModelParams<KMeans
         @Override
         public Row map(Row dataPoint) {
             if (centroids == null) {
+                Row modelRow = (Row)  getRuntimeContext().getBroadcastVariable(broadcastModelKey).get(0);
                 KMeansModelData modelData =
-                        (KMeansModelData)
-                                getRuntimeContext().getBroadcastVariable(broadcastModelKey).get(0);
+                        (KMeansModelData) modelRow.getField(1);
                 centroids = modelData.centroids;
             }
             DenseVector point = (DenseVector) dataPoint.getField(featuresCol);

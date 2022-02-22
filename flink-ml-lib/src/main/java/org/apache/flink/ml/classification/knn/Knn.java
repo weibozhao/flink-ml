@@ -129,7 +129,12 @@ public class Knn implements Estimator<Knn, KnnModel>, KnnParams<Knn> {
                                     labels.values[offset] = dataPoint.f1;
                                     normSquares.values[offset++] = dataPoint.f2;
                                 }
-                                out.collect(new KnnModelData(packedFeatures, normSquares, labels));
+                                out.collect(
+                                        new KnnModelData(
+                                                packedFeatures,
+                                                normSquares,
+                                                labels,
+                                                String.valueOf(System.nanoTime())));
                             }
                         });
         modelData.getTransformation().setParallelism(1);

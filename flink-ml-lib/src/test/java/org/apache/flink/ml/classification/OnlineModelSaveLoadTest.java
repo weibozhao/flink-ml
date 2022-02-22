@@ -52,20 +52,24 @@ public class OnlineModelSaveLoadTest {
     @Rule public final TemporaryFolder tempFolder = new TemporaryFolder();
     StreamTableEnvironment tEnv;
     StreamExecutionEnvironment env;
-    Schema modelSchema = Schema.newBuilder().column("f0", DataTypes.of(DenseVector.class)).build();
+    Schema modelSchema =
+            Schema.newBuilder()
+                    .column("coefficient", DataTypes.of(DenseVector.class))
+                    .column("modelVersion", DataTypes.of(String.class))
+                    .build();
     Schema dataSchema =
             Schema.newBuilder()
                     .column("f0", DataTypes.of(Double.class))
                     .column("f1", DataTypes.of(DenseVector.class))
                     .build();
 
-    private static final List<Row> modelData =
+    private static final List<LogisticRegressionModelData> modelData =
             new ArrayList<>(
                     Arrays.asList(
-                            Row.of(Vectors.dense(2.0, 4.5, 3.0)),
-                            Row.of(Vectors.dense(2.1, 4.6, 3.1)),
-                            Row.of(Vectors.dense(20.1, 5.6, 3.1)),
-                            Row.of(Vectors.dense(2.1, 4.7, 3.1))));
+                            new LogisticRegressionModelData(Vectors.dense(2.0, 4.5, 3.0), "1"),
+                            new LogisticRegressionModelData(Vectors.dense(2.1, 4.6, 3.1), "1"),
+                            new LogisticRegressionModelData(Vectors.dense(20.1, 5.6, 3.1), "4"),
+                            new LogisticRegressionModelData(Vectors.dense(2.1, 4.7, 3.1), "4")));
 
     private static final List<Row> validData =
             new ArrayList<>(
@@ -114,6 +118,7 @@ public class OnlineModelSaveLoadTest {
         String modelVersion;
         while ((modelVersion = bufferedReader.readLine()) != null) {
             LogisticRegressionModel lrModel = new LogisticRegressionModel().setFeaturesCol("vec");
+            System.out.println(modelVersion);
             if (!"metadata".equals(modelVersion)) {
                 Table modelData =
                         tEnv.fromDataStream(
@@ -145,6 +150,6 @@ public class OnlineModelSaveLoadTest {
                         .as("label, vec");
 
         List<Row> result = IteratorUtils.toList(tEnv.toDataStream(modelData).executeAndCollect());
-        Assert.assertEquals(result.size(), 4);
+        Assert.assertEquals(result.size(), 2);
     }
 }

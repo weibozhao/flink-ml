@@ -189,7 +189,7 @@ public class KnnTest {
                 StageTestUtils.saveAndReload(
                         env, knnModel, tempFolder.newFolder().getAbsolutePath());
         assertEquals(
-                Arrays.asList("packedFeatures", "featureNormSquares", "labels"),
+                Arrays.asList("packedFeatures", "featureNormSquares", "labels", "modelVersion"),
                 knnModel.getModelData()[0].getResolvedSchema().getColumnNames());
         Table output = knnModel.transform(predictData)[0];
         verifyPredictionResult(output, knn.getLabelCol(), knn.getPredictionCol());
@@ -220,7 +220,8 @@ public class KnnTest {
                 new KnnModelData(
                         (DenseMatrix) modelRows.get(0).getField(0),
                         (DenseVector) modelRows.get(0).getField(1),
-                        (DenseVector) modelRows.get(0).getField(2));
+                        (DenseVector) modelRows.get(0).getField(2),
+                        (String) modelRows.get(0).getField(3));
         Assert.assertNotNull(data);
         assertEquals(2, data.packedFeatures.numRows());
         assertEquals(data.packedFeatures.numCols(), data.labels.size());

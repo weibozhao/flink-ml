@@ -23,6 +23,7 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.file.src.reader.SimpleStreamFormat;
 import org.apache.flink.core.fs.FSDataInputStream;
+import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataInputViewStreamWrapper;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
 import org.apache.flink.ml.linalg.DenseVector;
@@ -31,6 +32,7 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.internal.TableImpl;
+import org.apache.flink.types.Row;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -45,6 +47,12 @@ import java.io.OutputStream;
 public class LogisticRegressionModelData {
 
     public DenseVector coefficient;
+    public String modelVersion;
+
+    public LogisticRegressionModelData(DenseVector coefficient, String modelVersion) {
+        this.coefficient = coefficient;
+        this.modelVersion = modelVersion;
+    }
 
     public LogisticRegressionModelData(DenseVector coefficient) {
         this.coefficient = coefficient;
@@ -58,21 +66,29 @@ public class LogisticRegressionModelData {
      * @param modelData The table model data.
      * @return The data stream model data.
      */
-    public static DataStream<LogisticRegressionModelData> getModelDataStream(Table modelData) {
+    public static DataStream<Row> getModelDataStream(Table modelData) {
         StreamTableEnvironment tEnv =
                 (StreamTableEnvironment) ((TableImpl) modelData).getTableEnvironment();
         return tEnv.toDataStream(modelData)
-                .map(x -> new LogisticRegressionModelData((DenseVector) x.getField(0)));
+                .map(
+                        x ->
+                                Row.of(
+                                        x.getField(1),
+                                        new LogisticRegressionModelData(
+                                                (DenseVector) x.getField(0))));
     }
 
     /** Data encoder for {@link LogisticRegressionModel}. */
-    public static class ModelDataEncoder implements Encoder<LogisticRegressionModelData> {
+    public static class ModelDataEncoder implements Encoder<Row> {
 
         @Override
-        public void encode(LogisticRegressionModelData modelData, OutputStream outputStream)
-                throws IOException {
+        public void encode(Row row, OutputStream outputStream) throws IOException {
+            LogisticRegressionModelData modelData = (LogisticRegressionModelData) row.getField(1);
+            DataOutputViewStreamWrapper dataOutputView =
+                    new DataOutputViewStreamWrapper(outputStream);
             DenseVectorSerializer.INSTANCE.serialize(
                     modelData.coefficient, new DataOutputViewStreamWrapper(outputStream));
+            dataOutputView.writeChars((String) row.getField(0));
         }
     }
 
@@ -87,10 +103,11 @@ public class LogisticRegressionModelData {
                 @Override
                 public LogisticRegressionModelData read() throws IOException {
                     try {
+                        DataInputView source = new DataInputViewStreamWrapper(inputStream);
                         DenseVector coefficient =
-                                DenseVectorSerializer.INSTANCE.deserialize(
-                                        new DataInputViewStreamWrapper(inputStream));
-                        return new LogisticRegressionModelData(coefficient);
+                                DenseVectorSerializer.INSTANCE.deserialize(source);
+                        String modelVersion = source.readLine();
+                        return new LogisticRegressionModelData(coefficient, modelVersion);
                     } catch (EOFException e) {
                         return null;
                     }

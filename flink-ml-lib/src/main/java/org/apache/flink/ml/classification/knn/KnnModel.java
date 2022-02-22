@@ -74,7 +74,7 @@ public class KnnModel implements Model<KnnModel>, KnnModelParams<KnnModel> {
         StreamTableEnvironment tEnv =
                 (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
         DataStream<Row> data = tEnv.toDataStream(inputs[0]);
-        DataStream<KnnModelData> knnModel = KnnModelData.getModelDataStream(modelDataTable);
+        DataStream<Row> knnModel = KnnModelData.getModelDataStream(modelDataTable);
         final String broadcastModelKey = "broadcastModelKey";
         RowTypeInfo inputTypeInfo = TableUtils.getRowTypeInfo(inputs[0].getResolvedSchema());
         RowTypeInfo outputTypeInfo =
@@ -142,9 +142,9 @@ public class KnnModel implements Model<KnnModel>, KnnModelParams<KnnModel> {
         @Override
         public Row map(Row row) {
             if (knnModelData == null) {
-                knnModelData =
-                        (KnnModelData)
-                                getRuntimeContext().getBroadcastVariable(broadcastKey).get(0);
+                Row modelRow = (Row) getRuntimeContext().getBroadcastVariable(broadcastKey).get(0);
+                knnModelData = (KnnModelData) (modelRow.getField(1));
+
                 distanceVector = new DenseVector(knnModelData.labels.size());
             }
             DenseVector feature = (DenseVector) row.getField(featureCol);

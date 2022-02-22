@@ -341,7 +341,11 @@ public class NaiveBayes
             }
 
             NaiveBayesModelData modelData =
-                    new NaiveBayesModelData(theta, Vectors.dense(piArray), Vectors.dense(labels));
+                    new NaiveBayesModelData(
+                            theta,
+                            Vectors.dense(piArray),
+                            Vectors.dense(labels),
+                            String.valueOf(System.currentTimeMillis()));
             collector.collect(modelData);
         }
     }

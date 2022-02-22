@@ -284,11 +284,11 @@ public class NaiveBayesTest {
         trainTable = tEnv.fromDataStream(env.fromCollection(trainData)).as("features", "label");
 
         NaiveBayesModel model = estimator.fit(trainTable);
-
-        NaiveBayesModelData actual =
+        Row modelRow =
                 NaiveBayesModelData.getModelDataStream(model.getModelData()[0])
                         .executeAndCollect()
                         .next();
+        NaiveBayesModelData actual = (NaiveBayesModelData) modelRow.getField(1);
 
         assertArrayEquals(new double[] {11.}, actual.labels.toArray(), 1e-5);
         assertArrayEquals(new double[] {0.0}, actual.piArray.toArray(), 1e-5);

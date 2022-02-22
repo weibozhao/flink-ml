@@ -75,8 +75,7 @@ public class NaiveBayesModel
 
         StreamTableEnvironment tEnv =
                 (StreamTableEnvironment) ((TableImpl) modelDataTable).getTableEnvironment();
-        DataStream<NaiveBayesModelData> modelDataStream =
-                NaiveBayesModelData.getModelDataStream(modelDataTable);
+        DataStream<Row> modelDataStream = NaiveBayesModelData.getModelDataStream(modelDataTable);
         DataStream<Row> input = tEnv.toDataStream(inputs[0]);
 
         Function<List<DataStream<?>>, DataStream<Row>> function =
@@ -145,9 +144,9 @@ public class NaiveBayesModel
         @Override
         public Row map(Row row) {
             if (modelData == null) {
-                modelData =
-                        (NaiveBayesModelData)
-                                getRuntimeContext().getBroadcastVariable(broadcastModelKey).get(0);
+                Row modelRow =
+                        (Row) getRuntimeContext().getBroadcastVariable(broadcastModelKey).get(0);
+                modelData = (NaiveBayesModelData) modelRow.getField(1);
             }
             Vector vector = (Vector) row.getField(featuresCol);
             double label = findMaxProbLabel(calculateProb(modelData, vector), modelData.labels);

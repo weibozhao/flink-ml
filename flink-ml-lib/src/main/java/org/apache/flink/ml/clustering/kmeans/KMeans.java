@@ -112,7 +112,9 @@ public class KMeans implements Estimator<KMeans, KMeansModel>, KMeansParams<KMea
                                 body)
                         .get(0);
 
-        Table finalCentroidsTable = tEnv.fromDataStream(finalCentroids.map(KMeansModelData::new));
+        final String modelVersion = String.valueOf(System.nanoTime());
+        Table finalCentroidsTable = tEnv.fromDataStream(finalCentroids.map(
+            (MapFunction <DenseVector[], KMeansModelData>) value -> new KMeansModelData(value, modelVersion)));
         KMeansModel model = new KMeansModel().setModelData(finalCentroidsTable);
         ReadWriteUtils.updateExistingParams(model, paramMap);
         return model;

@@ -322,6 +322,8 @@ public class LogisticRegression
 
         private final OutputTag<LogisticRegressionModelData> modelDataOutputTag;
 
+        private String modelVersion;
+
         public CacheDataAndDoTrain(
                 LogisticGradient logisticGradient,
                 int globalBatchSize,
@@ -391,8 +393,11 @@ public class LogisticRegression
             coefficientState.clear();
             feedbackBufferState.clear();
             if (getRuntimeContext().getIndexOfThisSubtask() == 0) {
+                modelVersion = String.valueOf(System.nanoTime());
                 updateModel();
-                context.output(modelDataOutputTag, new LogisticRegressionModelData(coefficient));
+                context.output(
+                        modelDataOutputTag,
+                        new LogisticRegressionModelData(coefficient, modelVersion));
             }
         }
 

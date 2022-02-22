@@ -208,7 +208,7 @@ public class KMeansTest extends AbstractTestBase {
                 StageTestUtils.saveAndReload(env, model, tempFolder.newFolder().getAbsolutePath());
         Table output = loadedModel.transform(dataTable)[0];
         assertEquals(
-                Collections.singletonList("centroids"),
+                Arrays.asList("centroids", "modelVersion"),
                 loadedModel.getModelData()[0].getResolvedSchema().getColumnNames());
         assertEquals(
                 Arrays.asList("features", "prediction"),
@@ -224,15 +224,16 @@ public class KMeansTest extends AbstractTestBase {
         KMeans kmeans = new KMeans().setMaxIter(2).setK(2);
         KMeansModel model = kmeans.fit(dataTable);
         assertEquals(
-                Collections.singletonList("centroids"),
+                Arrays.asList("centroids", "modelVersion"),
                 model.getModelData()[0].getResolvedSchema().getColumnNames());
 
-        DataStream<KMeansModelData> modelData =
+        DataStream<Row> modelData =
                 KMeansModelData.getModelDataStream(model.getModelData()[0]);
-        List<KMeansModelData> collectedModelData =
+        List<Row> collectedModelData =
                 IteratorUtils.toList(modelData.executeAndCollect());
         assertEquals(1, collectedModelData.size());
-        DenseVector[] centroids = collectedModelData.get(0).centroids;
+        Row modelRow = collectedModelData.get(0);
+        DenseVector[] centroids = ((KMeansModelData) modelRow.getField(1)).centroids;
         assertEquals(2, centroids.length);
         Arrays.sort(centroids, Comparator.comparingDouble(vector -> vector.get(0)));
         assertArrayEquals(centroids[0].values, new double[] {0.1, 0.1}, 1e-5);
