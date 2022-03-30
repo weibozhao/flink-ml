@@ -18,34 +18,24 @@
 
 package org.apache.flink.ml.classification.ftrl;
 
-import org.apache.flink.ml.clustering.kmeans.KMeans;
-import org.apache.flink.ml.clustering.kmeans.KMeansModelParams;
+import org.apache.flink.ml.classification.logisticregression.LogisticRegression;
+import org.apache.flink.ml.classification.logisticregression.LogisticRegressionModelParams;
 import org.apache.flink.ml.common.param.HasFeaturesCol;
+import org.apache.flink.ml.common.param.HasGlobalBatchSize;
 import org.apache.flink.ml.common.param.HasLabelCol;
+import org.apache.flink.ml.common.param.HasLearningRate;
 import org.apache.flink.ml.common.param.HasMaxIter;
-import org.apache.flink.ml.common.param.HasSeed;
-import org.apache.flink.ml.param.IntParam;
-import org.apache.flink.ml.param.Param;
-import org.apache.flink.ml.param.ParamValidators;
-import org.apache.flink.ml.param.StringParam;
+import org.apache.flink.ml.common.param.HasMultiClass;
+import org.apache.flink.ml.common.param.HasPredictionCol;
+import org.apache.flink.ml.common.param.HasRawPredictionCol;
+import org.apache.flink.ml.common.param.HasReg;
+import org.apache.flink.ml.common.param.HasTol;
+import org.apache.flink.ml.common.param.HasWeightCol;
 
 /**
- * Params of {@link Ftrl}.
+ * Params for {@link LogisticRegression}.
  *
  * @param <T> The class type of this instance.
  */
-public interface FtrlParams<T> extends
-    HasLabelCol <T>,
-    HasFeaturesCol <T> {
-
-	Param<Integer> VECTOR_SIZE =
-		new IntParam("vectorSize", "The size of vector.", -1, ParamValidators.gt(-2));
-
-	default Integer getVectorSize() {
-		return get(VECTOR_SIZE);
-	}
-
-	default T setVectorSize(Integer value) {
-		return set(VECTOR_SIZE, value);
-	}
-}
+public interface FtrlModelParams<T>
+      extends HasFeaturesCol <T>, HasPredictionCol <T>, HasRawPredictionCol <T> {}

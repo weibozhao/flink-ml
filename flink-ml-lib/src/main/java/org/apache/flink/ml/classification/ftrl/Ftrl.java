@@ -23,7 +23,6 @@ import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
-import org.apache.flink.ml.util.ReadWriteUtils;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
@@ -37,6 +36,7 @@ import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -51,6 +51,7 @@ public class Ftrl implements Estimator <Ftrl, FtrlModel>, FtrlParams <Ftrl> {
 	}
 
 	@Override
+	@SuppressWarnings("unchecked")
 	public FtrlModel fit(Table... inputs) {
 		Preconditions.checkArgument(inputs.length == 2);
 
@@ -71,8 +72,7 @@ public class Ftrl implements Estimator <Ftrl, FtrlModel>, FtrlParams <Ftrl> {
 			Tuple2 <Long, Object>>
 			iteration = trainData.iterate(Long.MAX_VALUE)
 			.withFeedbackType(TypeInformation
-				.of(new TypeHint <Tuple2 <Long, Object>>() {
-				}));
+				.of(new TypeHint <Tuple2 <Long, Object>>() {}));
 
 		DataStream iterativeBody = iteration.flatMap(new AppendWx())
 			.flatMap(new SplitVector(splitInfo, featureSize))
@@ -81,13 +81,13 @@ public class Ftrl implements Estimator <Ftrl, FtrlModel>, FtrlParams <Ftrl> {
 
 		iterativeBody =
 			BroadcastUtils.withBroadcastStream(
-				Collections. <DataStream <?>>singletonList(iterativeBody),
-				Collections. <String, DataStream <?>>singletonMap("model", model),
+				Collections.singletonList(iterativeBody),
+				Collections.singletonMap("model", model),
 				inputList -> {
 					DataStream input = inputList.get(0);
 					return input.flatMap(
 						new CalcTask(splitInfo, new FtrlLearningKernel(), featureSize),
-						TypeInformation.of(Tuple2.class));// todo :check
+						TypeInformation.of(new TypeHint<Tuple2<Long, Object>>(){}));
 				});
 
 		iterativeBody = iterativeBody.keyBy((KeySelector <Tuple2 <Long, Object>, Long>) value -> value.f0)
@@ -123,9 +123,9 @@ public class Ftrl implements Estimator <Ftrl, FtrlModel>, FtrlParams <Ftrl> {
 			(MapFunction <Tuple2 <Long, Object>, DenseVector>) value -> new DenseVector(
 				(double[]) value.f1));
 
-		FtrlModel modelStream = new FtrlModel().setModelData(tEnv.fromDataStream(models));
-		ReadWriteUtils.updateExistingParams(modelStream, paramMap);
-		return modelStream;
+		//ReadWriteUtils.updateExistingParams(modelStream, paramMap);
+
+		return new FtrlModel().setModelData(tEnv.fromDataStream(models));
 	}
 
 	public static class ParseSample
@@ -287,7 +287,7 @@ public class Ftrl implements Estimator <Ftrl, FtrlModel>, FtrlParams <Ftrl> {
 
 		public CalcTask(int[] poses, FtrlLearningKernel kernel, int vectorSize) {
 			this.poses = poses;
-			this.modelSaveTimeInterval = 20000; // todo read from params
+			this.modelSaveTimeInterval = 20; // todo read from params
 			this.kernel = kernel;
 			this.vectorSize = vectorSize;
 		}
@@ -332,7 +332,8 @@ public class Ftrl implements Estimator <Ftrl, FtrlModel>, FtrlParams <Ftrl> {
 		@Override
 		public void flatMap(
 			Tuple6 <Long, Integer, Integer, Vector, Double, double[]> value,
-			Collector <Tuple2 <Long, Object>> out) {
+			Collector <Tuple2 <Long, Object>> out) throws InterruptedException {
+			Thread.sleep(1000);
 
 			if (this.coef == null) {
 				LogisticRegressionModelData logisticRegressionModelData =
@@ -397,7 +398,7 @@ public class Ftrl implements Estimator <Ftrl, FtrlModel>, FtrlParams <Ftrl> {
 
 		@Override
 		public void flatMap(Tuple2 <Long, Object> value,
-							Collector <Tuple2 <Long, Object>> out) {
+							Collector <Tuple2 <Long, Object>> out) throws InterruptedException {
 			if (value.f0 < 0) {
 				long modelId = value.f0;
 				Tuple2 <Integer, double[]> t2 = (Tuple2 <Integer, double[]>) value.f1;
@@ -435,6 +436,7 @@ public class Ftrl implements Estimator <Ftrl, FtrlModel>, FtrlParams <Ftrl> {
 					out.collect(Tuple2.of(value.f0, kernel.getFeedbackVar(val.f1)));
 					buffer.remove(value.f0);
 				}
+				Thread.sleep(1000);
 			}
 		}
 	}
@@ -463,7 +465,7 @@ public class Ftrl implements Estimator <Ftrl, FtrlModel>, FtrlParams <Ftrl> {
 		}
 	}
 
-	public static class FtrlLearningKernel {
+	public static class FtrlLearningKernel implements Serializable {
 		private double alpha;
 		private double beta;
 		private double l1;
@@ -553,6 +555,6 @@ public class Ftrl implements Estimator <Ftrl, FtrlModel>, FtrlParams <Ftrl> {
 
 	@Override
 	public Map <Param <?>, Object> getParamMap() {
-		return null;
+		return paramMap;
 	}
 }
