@@ -24,6 +24,7 @@ import org.apache.flink.ml.common.param.HasFeaturesCol;
 import org.apache.flink.ml.common.param.HasLabelCol;
 import org.apache.flink.ml.common.param.HasMaxIter;
 import org.apache.flink.ml.common.param.HasSeed;
+import org.apache.flink.ml.param.IntParam;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.param.ParamValidators;
 import org.apache.flink.ml.param.StringParam;
@@ -36,4 +37,15 @@ import org.apache.flink.ml.param.StringParam;
 public interface FtrlParams<T> extends
     HasLabelCol <T>,
     HasFeaturesCol <T> {
+
+	Param<Integer> VECTOR_SIZE =
+		new IntParam("vectorSize", "The size of vector.", -1, ParamValidators.gt(0));
+
+	default Integer getVectorSize() {
+		return get(VECTOR_SIZE);
+	}
+
+	default T setVectorSize(Integer value) {
+		return set(VECTOR_SIZE, value);
+	}
 }

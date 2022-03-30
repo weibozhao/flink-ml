@@ -26,4 +26,15 @@ public class FtrlModel implements Model <FtrlModel>, FtrlParams <FtrlModel> {
 	public Map <Param <?>, Object> getParamMap() {
 		return null;
 	}
+
+	@Override
+	public FtrlModel setModelData(Table... inputs) {
+		modelDataTable = inputs[0];
+		return this;
+	}
+
+	@Override
+	public Table[] getModelData() {
+		return new Table[] {modelDataTable};
+	}
 }
