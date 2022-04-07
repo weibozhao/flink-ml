@@ -3,14 +3,20 @@ package org.apache.flink.ml.classification.ftrl;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.typeinfo.Types;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.ml.api.Model;
-import org.apache.flink.ml.classification.logisticregression.LogisticRegressionModelData;
+import org.apache.flink.ml.classification.logisticregression.LinearModelData;
 
 import org.apache.flink.ml.common.datastream.TableUtils;
+import org.apache.flink.ml.linalg.BLAS;
 import org.apache.flink.ml.linalg.DenseVector;
+import org.apache.flink.ml.linalg.SparseVector;
+import org.apache.flink.ml.linalg.Vector;
+import org.apache.flink.ml.linalg.Vectors;
 import org.apache.flink.ml.param.Param;
+import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
@@ -32,6 +38,10 @@ public class FtrlModel implements Model <FtrlModel>, FtrlModelParams <FtrlModel>
 	private final Map <Param <?>, Object> paramMap = new HashMap <>();
 	private Table modelDataTable;
 
+	public FtrlModel() {
+		ParamUtils.initializeMapWithDefaultValues(paramMap, this);
+	}
+
 	@Override
 	public Table[] transform(Table... inputs) {
 		Preconditions.checkArgument(inputs.length == 1);
@@ -42,12 +52,12 @@ public class FtrlModel implements Model <FtrlModel>, FtrlModelParams <FtrlModel>
 		RowTypeInfo inputTypeInfo = TableUtils.getRowTypeInfo(inputs[0].getResolvedSchema());
 		RowTypeInfo outputTypeInfo =
 			new RowTypeInfo(
-				ArrayUtils.addAll(inputTypeInfo.getFieldTypes(), Types.INT),
-				ArrayUtils.addAll(inputTypeInfo.getFieldNames(), getPredictionCol()));
+				ArrayUtils.addAll(inputTypeInfo.getFieldTypes(), Types.DOUBLE, Types.LONG),
+				ArrayUtils.addAll(inputTypeInfo.getFieldNames(), getPredictionCol(), "modelVersion"));
 
 		DataStream <Row> predictionResult =
 			tEnv.toDataStream(inputs[0])
-				.connect(LogisticRegressionModelData.getModelDataStream(modelDataTable).broadcast())
+				.connect(LinearModelData.getModelDataStream(modelDataTable).broadcast())
 				.transform(
 					"PredictLabelOperator",
 					outputTypeInfo,
@@ -58,16 +68,15 @@ public class FtrlModel implements Model <FtrlModel>, FtrlModelParams <FtrlModel>
 		return new Table[] {tEnv.fromDataStream(predictionResult)};
 	}
 
-
 	/** A utility operator used for prediction. */
 	private static class PredictLabelOperator extends AbstractStreamOperator <Row>
-		implements TwoInputStreamOperator <Row, LogisticRegressionModelData, Row> {
+		implements TwoInputStreamOperator <Row, LinearModelData, Row> {
 		private final RowTypeInfo inputTypeInfo;
 
 		private final String featuresCol;
 		private ListState <Row> bufferedPointsState;
-
-		private int modelDataVersion = 0;
+		private DenseVector coefficient;
+		private long modelDataVersion = 0;
 
 		public PredictLabelOperator(
 			RowTypeInfo inputTypeInfo,
@@ -94,21 +103,25 @@ public class FtrlModel implements Model <FtrlModel>, FtrlModelParams <FtrlModel>
 				.getMetricGroup()
 				.gauge(
 					"MODEL_DATA_VERSION_GAUGE_KEY",
-					(Gauge <String>) () -> Integer.toString(modelDataVersion));
+					(Gauge <String>) () -> Long.toString(modelDataVersion));
 		}
 
 		@Override
 		public void processElement1(StreamRecord <Row> streamRecord) throws Exception {
 			Row dataPoint = streamRecord.getValue();
 			// todo : predict data
-			//DenseVector point = (DenseVector) dataPoint.getField(featuresCol);
-			//output.collect(new StreamRecord<>(Row.join(dataPoint, Row.of())));
+			Vector features = (Vector) dataPoint.getField(featuresCol);
+			Tuple2 <Double, DenseVector> predictionResult = predictRaw(features, coefficient);
+			output.collect(new StreamRecord<>(Row.join(dataPoint, Row.of(predictionResult.f0, modelDataVersion))));
 		}
 
 		@Override
-		public void processElement2(StreamRecord<LogisticRegressionModelData> streamRecord) throws Exception {
-			LogisticRegressionModelData modelData = streamRecord.getValue();
+		public void processElement2(StreamRecord<LinearModelData> streamRecord) throws Exception {
+			LinearModelData modelData = streamRecord.getValue();
 
+			coefficient = modelData.coefficient;
+			modelDataVersion = modelData.modelVersion;
+			//System.out.println("update model...");
 			//todo : receive model data.
 			// Preconditions.checkArgument(modelData.centroids.length <= k);
 			//centroids = modelData.centroids;
@@ -120,6 +133,30 @@ public class FtrlModel implements Model <FtrlModel>, FtrlModelParams <FtrlModel>
 		}
 	}
 
+	/**
+	 * The main logic that predicts one input record.
+	 *
+	 * @param feature The input feature.
+	 * @param coefficient The model parameters.
+	 * @return The prediction label and the raw probabilities.
+	 */
+	public static Tuple2<Double, DenseVector> predictRaw(
+		Vector feature, DenseVector coefficient) throws InterruptedException {
+		while (coefficient == null) {
+			Thread.sleep(100);
+		}
+		double dotValue = 0.0;
+		if (feature instanceof SparseVector) {
+			SparseVector svec = (SparseVector) feature;
+			for (int i = 0; i < svec.indices.length; ++i) {
+				dotValue += svec.values[i] * coefficient.values[svec.indices[i]];
+			}
+		} else {
+			dotValue = BLAS.dot((DenseVector) feature, coefficient);
+		}
+		double prob = 1 - 1.0 / (1.0 + Math.exp(dotValue));
+		return new Tuple2<>(dotValue >= 0 ? 1. : 0., Vectors.dense(1 - prob, prob));
+	}
 
 	@Override
 	public void save(String path) throws IOException {
@@ -128,7 +165,7 @@ public class FtrlModel implements Model <FtrlModel>, FtrlModelParams <FtrlModel>
 
 	@Override
 	public Map <Param <?>, Object> getParamMap() {
-		return null;
+		return paramMap;
 	}
 
 	@Override

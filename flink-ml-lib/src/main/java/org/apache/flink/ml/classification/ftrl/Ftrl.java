@@ -1,34 +1,35 @@
 package org.apache.flink.ml.classification.ftrl;
 
-import org.apache.flink.api.common.functions.FilterFunction;
+import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
-import org.apache.flink.api.common.functions.Partitioner;
-import org.apache.flink.api.common.functions.RichFlatMapFunction;
+import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
-import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.api.java.tuple.Tuple3;
-import org.apache.flink.api.java.tuple.Tuple4;
-import org.apache.flink.api.java.tuple.Tuple6;
-import org.apache.flink.configuration.Configuration;
+import org.apache.flink.api.java.typeutils.ObjectArrayTypeInfo;
+import org.apache.flink.iteration.DataStreamList;
+import org.apache.flink.iteration.IterationBody;
+import org.apache.flink.iteration.IterationBodyResult;
+import org.apache.flink.iteration.Iterations;
+import org.apache.flink.iteration.operator.OperatorStateUtils;
 import org.apache.flink.ml.api.Estimator;
-import org.apache.flink.ml.classification.logisticregression.LogisticRegressionModelData;
-import org.apache.flink.ml.common.broadcast.BroadcastUtils;
+import org.apache.flink.ml.classification.logisticregression.LinearModelData;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.linalg.Vector;
+import org.apache.flink.ml.linalg.typeinfo.DenseVectorTypeInfo;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
-import org.apache.flink.runtime.state.FunctionInitializationContext;
-import org.apache.flink.runtime.state.FunctionSnapshotContext;
-import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
+import org.apache.flink.ml.util.ReadWriteUtils;
+import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.datastream.IterativeStream;
-import org.apache.flink.streaming.api.functions.co.RichCoFlatMapFunction;
+import org.apache.flink.streaming.api.functions.windowing.AllWindowFunction;
+import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
+import org.apache.flink.streaming.api.operators.TwoInputStreamOperator;
+import org.apache.flink.streaming.api.windowing.windows.GlobalWindow;
+import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.internal.TableImpl;
@@ -36,15 +37,16 @@ import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
 
-import java.io.Serializable;
-import java.util.ArrayList;
-import java.util.Collections;
+import org.apache.commons.collections.IteratorUtils;
+
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 public class Ftrl implements Estimator <Ftrl, FtrlModel>, FtrlParams <Ftrl> {
 	private final Map <Param <?>, Object> paramMap = new HashMap <>();
+	private Table initModelDataTable;
 
 	public Ftrl() {
 		ParamUtils.initializeMapWithDefaultValues(paramMap, this);
@@ -53,86 +55,228 @@ public class Ftrl implements Estimator <Ftrl, FtrlModel>, FtrlParams <Ftrl> {
 	@Override
 	@SuppressWarnings("unchecked")
 	public FtrlModel fit(Table... inputs) {
-		Preconditions.checkArgument(inputs.length == 2);
+		Preconditions.checkArgument(inputs.length == 1);
 
 		StreamTableEnvironment tEnv =
 			(StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
 
-		DataStream <Row> model = tEnv.toDataStream(inputs[0]);
+		DataStream <Tuple2 <Vector, Double>> points = tEnv.toDataStream(inputs[0])
+			.map(new ParseSample(getFeaturesCol(), getLabelCol()));
 
-		DataStream <Tuple3 <Long, Vector, Double>> trainData =
-			tEnv.toDataStream(inputs[1])
-				.map(new ParseSample(getFeaturesCol(), getLabelCol()));
+		DataStream <LinearModelData> modelDataStream =
+			LinearModelData.getModelDataStream(initModelDataTable);
+		DataStream <DenseVector[]> initModelData = modelDataStream.map(new GetVectorData());
+		initModelData.getTransformation().setParallelism(1);
 
-		int featureSize = getVectorSize();
-		int parallelism = trainData.getParallelism();
-		final int[] splitInfo = getSplitInfo(featureSize, parallelism);
+		IterationBody body = new FtrlIterationBody(getGlobalBatchSize(), getAlpha(), getBETA(), getL1(), getL2());
 
-		IterativeStream.ConnectedIterativeStreams <Tuple3 <Long, Vector, Double>,
-			Tuple2 <Long, Object>>
-			iteration = trainData.iterate(Long.MAX_VALUE)
-			.withFeedbackType(TypeInformation
-				.of(new TypeHint <Tuple2 <Long, Object>>() {}));
+		DataStream <LinearModelData> onlineModelData =
+			Iterations.iterateUnboundedStreams(
+					DataStreamList.of(initModelData), DataStreamList.of(points), body)
+				.get(0);
 
-		DataStream iterativeBody = iteration.flatMap(new AppendWx())
-			.flatMap(new SplitVector(splitInfo, featureSize))
-			.partitionCustom(new SubVectorPartitioner(),
-				(KeySelector <Tuple6 <Long, Integer, Integer, Vector, Double, double[]>, Integer>) value -> value.f1);
+		Table onlineModelDataTable = tEnv.fromDataStream(onlineModelData);
+		FtrlModel model = new FtrlModel().setModelData(onlineModelDataTable);
+		ReadWriteUtils.updateExistingParams(model, paramMap);
+		return model;
+	}
 
-		iterativeBody =
-			BroadcastUtils.withBroadcastStream(
-				Collections.singletonList(iterativeBody),
-				Collections.singletonMap("model", model),
-				inputList -> {
-					DataStream input = inputList.get(0);
-					return input.flatMap(
-						new CalcTask(splitInfo, new FtrlLearningKernel(), featureSize),
-						TypeInformation.of(new TypeHint<Tuple2<Long, Object>>(){}));
-				});
+	public static class FtrlIterationBody implements IterationBody {
+		private final int batchSize;
+		private final double alpha;
+		private final double beta;
+		private final double l1;
+		private final double l2;
 
-		iterativeBody = iterativeBody.keyBy((KeySelector <Tuple2 <Long, Object>, Long>) value -> value.f0)
-			.flatMap(new ReduceTask(parallelism, splitInfo, new FtrlLearningKernel()))
-			.partitionCustom(new WxPartitioner(), (KeySelector <Tuple2 <Long, Object>, Long>) value -> value.f0);
+		public FtrlIterationBody(int batchSize, double alpha, double beta, double l1, double l2) {
+			this.batchSize = batchSize;
+			this.alpha = alpha;
+			this.beta = beta;
+			this.l1 = l1;
+			this.l2 = l2;
+		}
 
-		DataStream <Tuple2 <Long, Object>>
-			result = iterativeBody.filter(
-			new FilterFunction <Tuple2 <Long, Object>>() {
-				private static final long serialVersionUID = -5436758453355074895L;
+		@Override
+		public IterationBodyResult process(
+			DataStreamList variableStreams, DataStreamList dataStreams) {
+			DataStream <DenseVector[]> modelData = variableStreams.get(0);
 
-				@Override
-				public boolean filter(Tuple2 <Long, Object> t2) {
-					// if t2.f0 >= 0 then feedback
-					return (t2.f0 >= 0);
+			DataStream <Tuple2 <Vector, Double>> points = dataStreams.get(0);
+
+			int parallelism = points.getParallelism();
+			DataStream <DenseVector[]> newModelData =
+				points.countWindowAll(batchSize)
+					.apply(new GlobalBatchCreator())
+					.flatMap(new GlobalBatchSplitter(parallelism))
+					.rebalance()
+					.connect(modelData.broadcast())
+					.transform(
+						"ModelDataLocalUpdater",
+						TypeInformation.of(DenseVector[].class),
+						new FtrlLocalUpdater(alpha, beta, l1, l2))
+					.setParallelism(parallelism)
+					.countWindowAll(parallelism)
+					.reduce(new FtrlGlobalReducer())
+					.map((MapFunction <DenseVector[], DenseVector[]>) value -> new DenseVector[]{value[0]}).setParallelism(1);
+
+			return new IterationBodyResult(DataStreamList.of(newModelData), DataStreamList.of(modelData.map(
+				new MapFunction <DenseVector[], LinearModelData>() {
+					long iter = 0L;
+					@Override
+					public LinearModelData map(DenseVector[] value) {
+						return new LinearModelData(value[0], iter++);
+					}
+				})));
+		}
+	}
+
+	public static class GetVectorData implements MapFunction<LinearModelData, DenseVector[]> {
+		@Override
+		public DenseVector[] map(LinearModelData value) throws Exception {
+			return new DenseVector[] {
+				value.coefficient};
+		}
+	}
+
+	/**
+	 * Operator that collects a LogisticRegressionModelData from each upstream subtask, and outputs the weight average
+	 * of collected model data.
+	 */
+	public static class FtrlGlobalReducer implements ReduceFunction <DenseVector[]> {
+		@Override
+		public DenseVector[] reduce(DenseVector[] modelData, DenseVector[] newModelData) {
+			for (int i = 0; i < newModelData[0].size(); ++i) {
+				if ((modelData[1].values[i] + newModelData[1].values[i]) > 0.0) {
+					newModelData[0].values[i] = (modelData[0].values[i] * modelData[1].values[i] +
+						newModelData[0].values[i] * newModelData[1].values[i]) / (modelData[1].values[i] +
+						newModelData[1].values[i]);
 				}
-			});
+				newModelData[1].values[i] = modelData[1].values[i] + newModelData[1].values[i];
+			}
+			return newModelData;
+		}
+	}
 
-		DataStream <Tuple2 <Long, Object>> output = iterativeBody.filter(
-			new FilterFunction <Tuple2 <Long, Object>>() {
-				private static final long serialVersionUID = 4204787383191799107L;
+	public static class FtrlLocalUpdater extends AbstractStreamOperator <DenseVector[]>
+		implements TwoInputStreamOperator <Tuple2 <Vector, Double>[], DenseVector[], DenseVector[]> {
+		private ListState <Tuple2 <Vector, Double>[]> localBatchDataState;
+		private ListState <DenseVector[]> modelDataState;
+		private double[] N;
+		private double[] Z;
+		private final double alpha;
+		private final double beta;
+		private final double l1;
+		private final double l2;
+		private DenseVector weights;
+		public FtrlLocalUpdater(double alpha, double beta, double l1, double l2) {
+			this.alpha = alpha;
+			this.beta = beta;
+			this.l1 = l1;
+			this.l2 = l2;
+		}
 
-				@Override
-				public boolean filter(Tuple2 <Long, Object> t2) {
-					/* if t2.f0 small than 0, then output */
-					return t2.f0 < 0;
+		@Override
+		public void initializeState(StateInitializationContext context) throws Exception {
+			super.initializeState(context);
+
+			TypeInformation <Tuple2 <Vector, Double>[]> type =
+				ObjectArrayTypeInfo.getInfoFor(DenseVectorTypeInfo.INSTANCE);
+			localBatchDataState =
+				context.getOperatorStateStore()
+					.getListState(new ListStateDescriptor <>("localBatch", type));
+			modelDataState =
+				context.getOperatorStateStore()
+					.getListState(
+						new ListStateDescriptor <>("modelData", DenseVector[].class));
+		}
+
+		@Override
+		public void processElement1(StreamRecord <Tuple2 <Vector, Double>[]> pointsRecord) throws Exception {
+			localBatchDataState.add(pointsRecord.getValue());
+			alignAndComputeModelData();
+		}
+
+		@Override
+		public void processElement2(StreamRecord <DenseVector[]> modelDataRecord)
+			throws Exception {
+			modelDataState.add(modelDataRecord.getValue());
+			alignAndComputeModelData();
+		}
+
+		private void alignAndComputeModelData() throws Exception {
+			if (!modelDataState.get().iterator().hasNext()
+				|| !localBatchDataState.get().iterator().hasNext()) {
+				return;
+			}
+
+			DenseVector[] modelData =
+				OperatorStateUtils.getUniqueElement(modelDataState, "modelData").get();
+			modelDataState.clear();
+
+			List <Tuple2 <Vector, Double>[]> pointsList =
+				IteratorUtils.toList(localBatchDataState.get().iterator());
+			Tuple2 <Vector, Double>[] points = pointsList.remove(0);
+			localBatchDataState.update(pointsList);
+
+			for (Tuple2 <Vector, Double> point : points) {
+				if (N == null) {
+					N = new double[point.f0.size()];
+					Z = new double[N.length];
+					weights = new DenseVector(N.length);
 				}
-			});
 
-		iteration.closeWith(result);
-
-		DataStream <DenseVector> models = output.map(
-			(MapFunction <Tuple2 <Long, Object>, DenseVector>) value -> new DenseVector(
-				(double[]) value.f1));
-
-		//ReadWriteUtils.updateExistingParams(modelStream, paramMap);
-
-		return new FtrlModel().setModelData(tEnv.fromDataStream(models));
+				double p = 0.0;
+				Arrays.fill(weights.values, 0.0);
+				if (point.f0 instanceof DenseVector) {
+					DenseVector denseVector = (DenseVector) point.f0;
+					for (int i = 0; i < denseVector.size(); ++i) {
+						if (Math.abs(Z[i]) <= l1) {
+							modelData[0].values[i] = 0.0;
+						} else {
+							modelData[0].values[i] = ((Z[i] < 0 ? -1 : 1) * l1 - Z[i]) / ((beta + Math.sqrt(
+								N[i])) / alpha + l2);
+						}
+						p += modelData[0].values[i] * denseVector.values[i];
+					}
+					p = 1 / (1 + Math.exp(-p));
+					for (int i = 0; i < denseVector.size(); ++i) {
+						double g = (p - point.f1) * denseVector.values[i];
+						double sigma = (Math.sqrt(N[i] + g * g) - Math.sqrt(N[i])) / alpha;
+						Z[i] += g - sigma * modelData[0].values[i];
+						N[i] += g * g;
+						weights.values[i] += 1.0;
+					}
+				} else {
+					SparseVector sparseVector = (SparseVector) point.f0;
+					for (int i = 0; i < sparseVector.indices.length; ++i) {
+						int idx = sparseVector.indices[i];
+						if (Math.abs(Z[idx]) <= l1) {
+							modelData[0].values[idx] = 0.0;
+						} else {
+							modelData[0].values[idx] = ((Z[idx] < 0 ? -1 : 1) * l1 - Z[idx]) / ((beta + Math.sqrt(
+								N[idx])) / alpha + l2);
+						}
+						p += modelData[0].values[idx] * sparseVector.values[i];
+					}
+					p = 1 / (1 + Math.exp(-p));
+					for (int i = 0; i < sparseVector.indices.length; ++i) {
+						int idx = sparseVector.indices[i];
+						double g = (p - point.f1) * sparseVector.values[i];
+						double sigma = (Math.sqrt(N[idx] + g * g) - Math.sqrt(N[idx])) / alpha;
+						Z[idx] += g - sigma * modelData[0].values[idx];
+						N[idx] += g * g;
+						weights.values[idx] += 1.0;
+					}
+				}
+			}
+			output.collect(new StreamRecord <>(new DenseVector[]{modelData[0], weights}));
+		}
 	}
 
 	public static class ParseSample
-		extends RichMapFunction <Row, Tuple3 <Long, Vector, Double>> {
+		extends RichMapFunction <Row, Tuple2 <Vector, Double>> {
 		private static final long serialVersionUID = 3738888745125082777L;
-		private long counter;
-		private int parallelism;
+
 		private final String featureCol;
 		private final String labelCol;
 
@@ -142,409 +286,8 @@ public class Ftrl implements Estimator <Ftrl, FtrlModel>, FtrlParams <Ftrl> {
 		}
 
 		@Override
-		public void open(Configuration parameters) {
-			this.parallelism = getRuntimeContext().getNumberOfParallelSubtasks();
-			counter = getRuntimeContext().getIndexOfThisSubtask();
-		}
-
-		@Override
-		public Tuple3 <Long, Vector, Double> map(Row row) {
-			counter += parallelism;
-			return Tuple3.of(counter, (Vector) row.getField(featureCol), (Double) row.getField(labelCol));
-		}
-	}
-
-	private static int[] getSplitInfo(int coefSize, int parallelism) {
-		int subSize = coefSize / parallelism;
-		int[] poses = new int[parallelism + 1];
-		int offset = coefSize % parallelism;
-		for (int i = 0; i < offset; ++i) {
-			poses[i + 1] = poses[i] + subSize + 1;
-		}
-		for (int i = offset; i < parallelism; ++i) {
-			poses[i + 1] = poses[i] + subSize;
-		}
-		return poses;
-	}
-
-	public static class AppendWx extends RichCoFlatMapFunction <Tuple3 <Long, Vector, Double>,
-		Tuple2 <Long, Object>,
-		Tuple4 <Long, Vector, Double, double[]>> {
-		private static final long serialVersionUID = 7338858137860097282L;
-		Map <Long, Tuple3 <Vector, Double, Long>> sampleBuffer = new HashMap <>();
-
-		@Override
-		public void flatMap1(Tuple3 <Long, Vector, Double> value,
-							 Collector <Tuple4 <Long, Vector, Double, double[]>> out) {
-			sampleBuffer.put(value.f0, Tuple3.of(value.f1, value.f2, System.currentTimeMillis()));
-			out.collect(Tuple4.of(value.f0, value.f1, value.f2, new double[] {0.0}));
-		}
-
-		@Override
-		public void flatMap2(Tuple2 <Long, Object> value, Collector <Tuple4 <Long, Vector, Double, double[]>> out) {
-			Tuple3 <Vector, Double, Long> sample = sampleBuffer.get(value.f0);
-			out.collect(Tuple4.of(-(value.f0 + 1), sample.f0, sample.f1, (double[]) value.f1));
-		}
-	}
-
-	public static class SplitVector
-		extends RichFlatMapFunction <Tuple4 <Long, Vector, Double, double[]>,
-		Tuple6 <Long, Integer, Integer, Vector, Double, double[]>> {
-		private static final long serialVersionUID = -8716205207637225677L;
-		private int coefSize;
-		private final int vectorSize;
-		private int parallelism;
-		private final int[] splitInfo;
-		private final int[] nnz;
-
-		public SplitVector(int[] splitInfo, int vectorSize) {
-			this.vectorSize = vectorSize;
-
-			this.splitInfo = splitInfo;
-			this.nnz = new int[splitInfo.length - 1];
-		}
-
-		@Override
-		public void open(Configuration parameters) {
-			this.parallelism = getRuntimeContext().getNumberOfParallelSubtasks();
-			coefSize = vectorSize;
-		}
-
-		@Override
-		public void flatMap(Tuple4 <Long, Vector, Double, double[]> t4,
-							Collector <Tuple6 <Long, Integer, Integer, Vector, Double, double[]>> collector) {
-			Vector vec = t4.f1;
-
-			if (vec instanceof SparseVector) {
-				int[] indices = ((SparseVector) vec).indices;
-				double[] values = ((SparseVector) vec).values;
-				int pos = 1;
-				int subNum = 0;
-				boolean hasElement = false;
-
-				for (int i = 0; i < indices.length; ++i) {
-					if (indices[i] < splitInfo[pos]) {
-						nnz[pos - 1]++;
-						hasElement = true;
-					} else {
-						pos++;
-						i--;
-						if (hasElement) {
-							subNum++;
-							hasElement = false;
-						}
-					}
-				}
-				if (nnz[pos - 1] != 0) {
-					subNum++;
-				}
-				pos = 0;
-				for (int i = 0; i < nnz.length; ++i) {
-					if (nnz[i] != 0) {
-						int[] tmpIndices = new int[nnz[i]];
-						double[] tmpValues = new double[nnz[i]];
-						System.arraycopy(indices, pos, tmpIndices, 0, nnz[i]);
-						System.arraycopy(values, pos, tmpValues, 0, nnz[i]);
-						Vector tmpVec = new SparseVector(coefSize, tmpIndices, tmpValues);
-						collector.collect(Tuple6.of(t4.f0, i, subNum, tmpVec, t4.f2, t4.f3));
-						pos += nnz[i];
-						nnz[i] = 0;
-					}
-				}
-			} else {
-				double[] data = ((DenseVector) vec).values;
-				for (int i = 0; i < splitInfo.length - 1; ++i) {
-					DenseVector dvec = new DenseVector(splitInfo[i + 1] - splitInfo[i]);
-					if (splitInfo[i + 1] - splitInfo[i] >= 0) {
-						System.arraycopy(data, splitInfo[i], dvec.values, 0,
-							splitInfo[i + 1] - splitInfo[i]);
-					}
-					collector.collect(Tuple6.of(t4.f0, i, parallelism, dvec, t4.f2, t4.f3));
-				}
-			}
-		}
-	}
-
-	public static class CalcTask extends RichFlatMapFunction <Tuple6 <Long, Integer, Integer, Vector, Double,
-		double[]>,
-		Tuple2 <Long, Object>> implements CheckpointedFunction {
-		private static final long serialVersionUID = 1613267176484234752L;
-		transient private double[] coef;
-		transient private Map <Long, Tuple3 <Vector, Object, Long>> subVectors;
-
-		private int startIdx;
-		private int endIdx;
-		private final int[] poses;
-		long startTime = System.currentTimeMillis();
-		int modelSaveTimeInterval;
-		private long modelId = 0;
-		private final FtrlLearningKernel kernel;
-		private final int vectorSize;
-		private int numWorkers;
-		private int workerId;
-		//private final boolean hasIntercept;
-		private transient ListState <double[]> modelState;
-
-		public CalcTask(int[] poses, FtrlLearningKernel kernel, int vectorSize) {
-			this.poses = poses;
-			this.modelSaveTimeInterval = 20; // todo read from params
-			this.kernel = kernel;
-			this.vectorSize = vectorSize;
-		}
-
-		@Override
-		public void open(Configuration parameters) throws Exception {
-			super.open(parameters);
-			subVectors = new HashMap <>();
-			startTime = System.currentTimeMillis();
-		}
-
-		@Override
-		public void snapshotState(FunctionSnapshotContext context) throws Exception {
-			double[] state = coef;
-			modelState.clear();
-			modelState.add(state);
-		}
-
-		@Override
-		public void initializeState(FunctionInitializationContext context) throws Exception {
-			modelState =
-				context.getOperatorStateStore()
-					.getListState(
-						new ListStateDescriptor <>(
-							"statStreamingOnlineFtrlModelState",
-							TypeInformation.of(new TypeHint <double[]>() {
-							})));
-
-			numWorkers = getRuntimeContext().getNumberOfParallelSubtasks();
-			workerId = getRuntimeContext().getIndexOfThisSubtask();
-			startIdx = poses[workerId];
-			endIdx = poses[workerId + 1];
-			if (context.isRestored()) {
-				for (double[] state : modelState.get()) {
-					this.coef = state;
-					int localSize = coef.length;
-					kernel.setModelParams(localSize);
-				}
-			}
-		}
-
-		@Override
-		public void flatMap(
-			Tuple6 <Long, Integer, Integer, Vector, Double, double[]> value,
-			Collector <Tuple2 <Long, Object>> out) throws InterruptedException {
-			Thread.sleep(1000);
-
-			if (this.coef == null) {
-				LogisticRegressionModelData logisticRegressionModelData =
-					(LogisticRegressionModelData)
-						getRuntimeContext().getBroadcastVariable("initModel").get(0);
-				DenseVector coefVector = logisticRegressionModelData.coefficient;
-				int localSize = vectorSize / numWorkers;
-				localSize += (workerId < vectorSize % numWorkers) ? 1 : 0;
-				kernel.setModelParams(localSize);
-
-				coef = new double[localSize];
-				endIdx = Math.min(endIdx, coefVector.size());
-				for (int i = startIdx; i < endIdx; ++i) {
-					coef[i - startIdx] = coefVector.get(i);
-				}
-			}
-
-			Long timeStamps = System.currentTimeMillis();
-			if (value.f0 >= 0) {
-				Vector vec = value.f3;
-				double[] rval = kernel.calcLocalWx(coef, vec, startIdx);
-				subVectors.put(value.f0, Tuple3.of(vec, value.f4, timeStamps));
-				out.collect(Tuple2.of(value.f0, Tuple2.of(value.f2, rval)));
-			} else {
-				Tuple3 <Vector, Object, Long> t3 = subVectors.get(-(value.f0 + 1));
-				long timeInterval = timeStamps - t3.f2;
-				Vector vec = t3.f0;
-				double[] r = value.f5;
-				kernel.updateModel(coef, vec, r, timeInterval, startIdx, value.f4);
-				subVectors.remove(-(value.f0 + 1));
-				if (System.currentTimeMillis() - startTime > modelSaveTimeInterval) {
-					startTime = System.currentTimeMillis();
-					modelId++;
-					out.collect(Tuple2.of(-modelId,
-						Tuple2.of(getRuntimeContext().getIndexOfThisSubtask(), coef)));
-				}
-			}
-		}
-	}
-
-	public static class ReduceTask extends
-		RichFlatMapFunction <Tuple2 <Long, Object>, Tuple2 <Long, Object>> {
-		private static final long serialVersionUID = 1072071076831105639L;
-		private final int parallelism;
-		private final int[] poses;
-		transient private Map <Long, Tuple2 <Integer, double[]>> buffer;
-		FtrlLearningKernel kernel;
-		private Map <Long, List <Tuple2 <Integer, double[]>>> models;
-
-		public ReduceTask(int parallelism, int[] poses, FtrlLearningKernel kernel) {
-			this.parallelism = parallelism;
-			this.poses = poses;
-			this.kernel = kernel;
-		}
-
-		@Override
-		public void open(Configuration parameters) throws Exception {
-			super.open(parameters);
-			buffer = new HashMap <>(0);
-			models = new HashMap <>(0);
-		}
-
-		@Override
-		public void flatMap(Tuple2 <Long, Object> value,
-							Collector <Tuple2 <Long, Object>> out) throws InterruptedException {
-			if (value.f0 < 0) {
-				long modelId = value.f0;
-				Tuple2 <Integer, double[]> t2 = (Tuple2 <Integer, double[]>) value.f1;
-				List <Tuple2 <Integer, double[]>> model = models.get(modelId);
-				if (model == null) {
-					model = new ArrayList <>();
-					model.add(Tuple2.of(t2.f0, t2.f1));
-					models.put(modelId, model);
-				} else {
-					model.add(Tuple2.of(t2.f0, t2.f1));
-				}
-				if (model.size() == parallelism) {
-					double[] coef = new double[poses[parallelism]];
-					for (Tuple2 <Integer, double[]> subModel : model) {
-						int pos = poses[subModel.f0];
-						System.arraycopy(subModel.f1, 0, coef, pos, subModel.f1.length);
-					}
-					out.collect(Tuple2.of(value.f0, coef));
-					models.remove(modelId);
-				}
-			} else {
-				Tuple2 <Integer, double[]> val = buffer.get(value.f0);
-				Tuple2 <Integer, double[]> t2 = (Tuple2 <Integer, double[]>) value.f1;
-				if (val == null) {
-					val = Tuple2.of(1, t2.f1);
-					buffer.put(value.f0, val);
-				} else {
-					val.f0++;
-					for (int i = 0; i < val.f1.length; ++i) {
-						val.f1[i] += t2.f1[i];
-					}
-				}
-
-				if (val.f0.equals(t2.f0)) {
-					out.collect(Tuple2.of(value.f0, kernel.getFeedbackVar(val.f1)));
-					buffer.remove(value.f0);
-				}
-				Thread.sleep(1000);
-			}
-		}
-	}
-
-	private static class SubVectorPartitioner implements Partitioner <Integer> {
-
-		private static final long serialVersionUID = 3154122892861557361L;
-
-		@Override
-		public int partition(Integer key, int numPartitions) {
-			return key % numPartitions;
-		}
-	}
-
-	private static class WxPartitioner implements Partitioner <Long> {
-
-		private static final long serialVersionUID = -6637943571982178520L;
-
-		@Override
-		public int partition(Long sampleId, int numPartition) {
-			if (sampleId < 0L) {
-				return 0;
-			} else {
-				return (int) (sampleId % numPartition);
-			}
-		}
-	}
-
-	public static class FtrlLearningKernel implements Serializable {
-		private double alpha;
-		private double beta;
-		private double l1;
-		private double l2;
-		private double[] nParam;
-		private double[] zParam;
-
-		public void setModelParams(int localModelSize) {
-			nParam = new double[localModelSize];
-			zParam = new double[localModelSize];
-			this.alpha = 0.1;
-			this.beta = 0.1;
-			this.l1 = 0.1;
-			this.l2 = 0.1;
-		}
-
-		public double[] getFeedbackVar(double[] wx) {
-			return new double[] {1 / (1 + Math.exp(-wx[0]))};
-		}
-
-		public double[] calcLocalWx(double[] coef, Vector vec, int startIdx) {
-			double y = 0.0;
-			if (vec instanceof SparseVector) {
-				int[] indices = ((SparseVector) vec).indices;
-
-				for (int i = 0; i < indices.length; ++i) {
-					y += ((SparseVector) vec).values[i] * coef[indices[i] - startIdx];
-				}
-			} else {
-				for (int i = 0; i < vec.size(); ++i) {
-					y += vec.get(i) * coef[i];
-				}
-			}
-			return new double[] {y};
-		}
-
-		public void updateModel(double[] coef, Vector vec, double[] wx, long timeInterval,
-								int startIdx, double labelValue) {
-			double pred = wx[0];
-
-			if (vec instanceof SparseVector) {
-				int[] indices = ((SparseVector) vec).indices;
-				double[] values = ((SparseVector) vec).values;
-
-				for (int i = 0; i < indices.length; ++i) {
-					// update zParam nParam
-					int id = indices[i] - startIdx;
-					double g = (pred - labelValue) * values[i] / Math.sqrt(timeInterval + 1);
-					double sigma = (Math.sqrt(nParam[id] + g * g) - Math.sqrt(nParam[id])) / alpha;
-					zParam[id] += g - sigma * coef[id];
-					nParam[id] += g * g;
-
-					// update model coefficient
-					if (Math.abs(zParam[id]) <= l1) {
-						coef[id] = 0.0;
-					} else {
-						coef[id] = ((zParam[id] < 0 ? -1 : 1) * l1 - zParam[id])
-							/ ((beta + Math.sqrt(nParam[id]) / alpha + l2));
-					}
-				}
-			} else {
-				double[] data = ((DenseVector) vec).values;
-
-				for (int i = 0; i < data.length; ++i) {
-					// update zParam nParam
-					double g = (pred - labelValue) * data[i] / Math.sqrt(timeInterval + 1);
-					double sigma = (Math.sqrt(nParam[i] + g * g) - Math.sqrt(nParam[i])) / alpha;
-					zParam[i] += g - sigma * coef[i];
-					nParam[i] += g * g;
-
-					// update model coefficient
-					if (Math.abs(zParam[i]) <= l1) {
-						coef[i] = 0.0;
-					} else {
-						coef[i] = ((zParam[i] < 0 ? -1 : 1) * l1 - zParam[i])
-							/ ((beta + Math.sqrt(nParam[i]) / alpha + l2));
-					}
-				}
-			}
+		public Tuple2 <Vector, Double> map(Row row) {
+			return Tuple2.of((Vector) row.getField(featureCol), (Double) row.getField(labelCol));
 		}
 	}
 
@@ -557,4 +300,60 @@ public class Ftrl implements Estimator <Ftrl, FtrlModel>, FtrlParams <Ftrl> {
 	public Map <Param <?>, Object> getParamMap() {
 		return paramMap;
 	}
+
+	/**
+	 * An operator that splits a global batch into evenly-sized local batches, and distributes them to downstream
+	 * operator.
+	 */
+	private static class GlobalBatchSplitter
+		implements FlatMapFunction <Tuple2 <Vector, Double>[], Tuple2 <Vector, Double>[]> {
+		private final int downStreamParallelism;
+
+		private GlobalBatchSplitter(int downStreamParallelism) {
+			this.downStreamParallelism = downStreamParallelism;
+		}
+
+		@Override
+		public void flatMap(Tuple2 <Vector, Double>[] values,
+							Collector <Tuple2 <Vector, Double>[]> collector) {
+			int div = values.length / downStreamParallelism;
+			int mod = values.length % downStreamParallelism;
+
+			int offset = 0;
+			int i = 0;
+
+			int size = div + 1;
+			for (; i < mod; i++) {
+				collector.collect(Arrays.copyOfRange(values, offset, offset + size));
+				offset += size;
+			}
+
+			size = div;
+			for (; i < downStreamParallelism; i++) {
+				collector.collect(Arrays.copyOfRange(values, offset, offset + size));
+				offset += size;
+			}
+		}
+	}
+
+	private static class GlobalBatchCreator
+		implements AllWindowFunction <Tuple2 <Vector, Double>, Tuple2 <Vector, Double>[], GlobalWindow> {
+		@Override
+		public void apply(
+			GlobalWindow timeWindow,
+			Iterable <Tuple2 <Vector, Double>> iterable,
+			Collector <Tuple2 <Vector, Double>[]> collector) {
+			List <Tuple2 <Vector, Double>> points = IteratorUtils.toList(iterable.iterator());
+			collector.collect(points.toArray(new Tuple2[0]));
+		}
+	}
+
+	/**
+	 * Sets the initial model data of the online training process with the provided model data table.
+	 */
+	public Ftrl setInitialModelData(Table initModelDataTable) {
+		this.initModelDataTable = initModelDataTable;
+		return this;
+	}
+
 }

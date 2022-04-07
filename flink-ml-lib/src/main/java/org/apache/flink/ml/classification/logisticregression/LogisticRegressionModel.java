@@ -69,18 +69,18 @@ public class LogisticRegressionModel
     public void save(String path) throws IOException {
         ReadWriteUtils.saveMetadata(this, path);
         ReadWriteUtils.saveModelData(
-                LogisticRegressionModelData.getModelDataStream(modelDataTable),
+                LinearModelData.getModelDataStream(modelDataTable),
                 path,
-                new LogisticRegressionModelData.ModelDataEncoder());
+                new LinearModelData.ModelDataEncoder());
     }
 
     public static LogisticRegressionModel load(StreamExecutionEnvironment env, String path)
             throws IOException {
         StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
         LogisticRegressionModel model = ReadWriteUtils.loadStageParam(path);
-        DataStream<LogisticRegressionModelData> modelData =
+        DataStream<LinearModelData> modelData =
                 ReadWriteUtils.loadModelData(
-                        env, path, new LogisticRegressionModelData.ModelDataDecoder());
+                        env, path, new LinearModelData.ModelDataDecoder());
         return model.setModelData(tEnv.fromDataStream(modelData));
     }
 
@@ -103,8 +103,8 @@ public class LogisticRegressionModel
                 (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
         DataStream<Row> inputStream = tEnv.toDataStream(inputs[0]);
         final String broadcastModelKey = "broadcastModelKey";
-        DataStream<LogisticRegressionModelData> modelDataStream =
-                LogisticRegressionModelData.getModelDataStream(modelDataTable);
+        DataStream<LinearModelData> modelDataStream =
+                LinearModelData.getModelDataStream(modelDataTable);
         RowTypeInfo inputTypeInfo = TableUtils.getRowTypeInfo(inputs[0].getResolvedSchema());
         RowTypeInfo outputTypeInfo =
                 new RowTypeInfo(
@@ -146,8 +146,8 @@ public class LogisticRegressionModel
         @Override
         public Row map(Row dataPoint) {
             if (coefficient == null) {
-                LogisticRegressionModelData modelData =
-                        (LogisticRegressionModelData)
+                LinearModelData modelData =
+                        (LinearModelData)
                                 getRuntimeContext().getBroadcastVariable(broadcastModelKey).get(0);
                 coefficient = modelData.coefficient;
             }
@@ -164,7 +164,7 @@ public class LogisticRegressionModel
      * @param coefficient The model parameters.
      * @return The prediction label and the raw probabilities.
      */
-    private static Tuple2<Double, DenseVector> predictRaw(
+    public static Tuple2<Double, DenseVector> predictRaw(
             DenseVector feature, DenseVector coefficient) {
         double dotValue = BLAS.dot(feature, coefficient);
         double prob = 1 - 1.0 / (1.0 + Math.exp(dotValue));

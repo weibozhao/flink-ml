@@ -18,24 +18,24 @@
 
 package org.apache.flink.ml.classification.ftrl;
 
-import org.apache.flink.ml.clustering.kmeans.KMeans;
-import org.apache.flink.ml.clustering.kmeans.KMeansModelParams;
+import org.apache.flink.ml.common.param.HasBatchStrategy;
 import org.apache.flink.ml.common.param.HasFeaturesCol;
+import org.apache.flink.ml.common.param.HasGlobalBatchSize;
 import org.apache.flink.ml.common.param.HasLabelCol;
-import org.apache.flink.ml.common.param.HasMaxIter;
-import org.apache.flink.ml.common.param.HasSeed;
+import org.apache.flink.ml.param.DoubleParam;
 import org.apache.flink.ml.param.IntParam;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.param.ParamValidators;
-import org.apache.flink.ml.param.StringParam;
 
 /**
- * Params of {@link Ftrl}.
+ * Params of {@link FtrlSplitVec}.
  *
  * @param <T> The class type of this instance.
  */
 public interface FtrlParams<T> extends
     HasLabelCol <T>,
+	HasBatchStrategy <T>,
+	HasGlobalBatchSize <T>,
     HasFeaturesCol <T> {
 
 	Param<Integer> VECTOR_SIZE =
@@ -47,5 +47,49 @@ public interface FtrlParams<T> extends
 
 	default T setVectorSize(Integer value) {
 		return set(VECTOR_SIZE, value);
+	}
+
+	Param<Double> L_1 =
+		new DoubleParam("l1", "The parameter l1 of ftrl.", 0.1, ParamValidators.gt(0.0));
+
+	default Double getL1() {
+		return get(L_1);
+	}
+
+	default T setL1(Double value) {
+		return set(L_1, value);
+	}
+
+	Param<Double> L_2 =
+		new DoubleParam("l2", "The parameter l2 of ftrl.", 0.1, ParamValidators.gt(0.0));
+
+	default Double getL2() {
+		return get(L_2);
+	}
+
+	default T setL2(Double value) {
+		return set(L_2, value);
+	}
+
+	Param<Double> ALPHA =
+		new DoubleParam("alpha", "The parameter alpha of ftrl.", 0.1, ParamValidators.gt(0.0));
+
+	default Double getAlpha() {
+		return get(ALPHA);
+	}
+
+	default T setAlpha(Double value) {
+		return set(ALPHA, value);
+	}
+
+	Param<Double> BETA =
+		new DoubleParam("alpha", "The parameter beta of ftrl.", 0.1, ParamValidators.gt(0.0));
+
+	default Double getBETA() {
+		return get(BETA);
+	}
+
+	default T setBETA(Double value) {
+		return set(BETA, value);
 	}
 }

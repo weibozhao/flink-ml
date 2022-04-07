@@ -1,5 +1,7 @@
 package org.apache.flink.ml.classification.ftrl;
 
+import org.apache.flink.api.common.functions.FilterFunction;
+import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.Partitioner;
 import org.apache.flink.api.common.functions.RichFlatMapFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
@@ -7,27 +9,25 @@ import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.api.java.tuple.Tuple6;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.iteration.DataStreamList;
-import org.apache.flink.iteration.IterationBody;
-import org.apache.flink.iteration.IterationBodyResult;
-import org.apache.flink.iteration.Iterations;
 import org.apache.flink.ml.api.Estimator;
-import org.apache.flink.ml.classification.logisticregression.LogisticRegressionModelData;
+import org.apache.flink.ml.classification.logisticregression.LinearModelData;
+import org.apache.flink.ml.common.broadcast.BroadcastUtils;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
-import org.apache.flink.ml.util.ReadWriteUtils;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.IterativeStream;
 import org.apache.flink.streaming.api.functions.co.RichCoFlatMapFunction;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -38,78 +38,94 @@ import org.apache.flink.util.Preconditions;
 
 import java.io.Serializable;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-public class FtrlNew implements Estimator <FtrlNew, FtrlModel>, FtrlParams <FtrlNew> {
+public class FtrlSplitVec implements Estimator <FtrlSplitVec, FtrlModel>, FtrlParams <FtrlSplitVec> {
 	private final Map <Param <?>, Object> paramMap = new HashMap <>();
-	private Table initModelDataTable;
 
-	public FtrlNew() {
+	public FtrlSplitVec() {
 		ParamUtils.initializeMapWithDefaultValues(paramMap, this);
 	}
 
 	@Override
 	@SuppressWarnings("unchecked")
 	public FtrlModel fit(Table... inputs) {
-		Preconditions.checkArgument(inputs.length == 1);
+		Preconditions.checkArgument(inputs.length == 2);
 
 		StreamTableEnvironment tEnv =
 			(StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
 
-		DataStream <Tuple3 <Long, Vector, Double>> points = tEnv.toDataStream(inputs[0])
+		DataStream <Row> model = tEnv.toDataStream(inputs[0]);
+
+		DataStream <Tuple3 <Long, Vector, Double>> trainData =
+			tEnv.toDataStream(inputs[1])
 				.map(new ParseSample(getFeaturesCol(), getLabelCol()));
 
-		DataStream<LogisticRegressionModelData> initModelData =
-			LogisticRegressionModelData.getModelDataStream(initModelDataTable);
-		initModelData.getTransformation().setParallelism(1);
+		int featureSize = getVectorSize();
+		int parallelism = trainData.getParallelism();
+		final int[] splitInfo = getSplitInfo(featureSize, parallelism);
 
-		IterationBody body = new FtrlIterationBody();
+		IterativeStream.ConnectedIterativeStreams <Tuple3 <Long, Vector, Double>,
+			Tuple2 <Long, Object>>
+			iteration = trainData.iterate(Long.MAX_VALUE)
+			.withFeedbackType(TypeInformation
+				.of(new TypeHint <Tuple2 <Long, Object>>() {}));
 
-		DataStream<LogisticRegressionModelData> onlineModelData =
-			Iterations.iterateUnboundedStreams(
-				DataStreamList.of(initModelData), DataStreamList.of(points), body)
-				.get(0);
+		DataStream iterativeBody = iteration.flatMap(new AppendWx())
+			.flatMap(new SplitVector(splitInfo, featureSize))
+			.partitionCustom(new SubVectorPartitioner(),
+				(KeySelector <Tuple6 <Long, Integer, Integer, Vector, Double, double[]>, Integer>) value -> value.f1);
 
-		Table onlineModelDataTable = tEnv.fromDataStream(onlineModelData);
-		FtrlModel model = new FtrlModel().setModelData(onlineModelDataTable);
-		ReadWriteUtils.updateExistingParams(model, paramMap);
-		return model;
-	}
+		iterativeBody =
+			BroadcastUtils.withBroadcastStream(
+				Collections.singletonList(iterativeBody),
+				Collections.singletonMap("model", model),
+				inputList -> {
+					DataStream input = inputList.get(0);
+					return input.flatMap(
+						new CalcTask(splitInfo, new FtrlLearningKernel(), featureSize),
+						TypeInformation.of(new TypeHint<Tuple2<Long, Object>>(){}));
+				});
 
-	private static class FtrlIterationBody implements IterationBody {
+		iterativeBody = iterativeBody.keyBy((KeySelector <Tuple2 <Long, Object>, Long>) value -> value.f0)
+			.flatMap(new ReduceTask(parallelism, splitInfo, new FtrlLearningKernel()))
+			.partitionCustom(new WxPartitioner(), (KeySelector <Tuple2 <Long, Object>, Long>) value -> value.f0);
 
-		public FtrlIterationBody() { }
+		DataStream <Tuple2 <Long, Object>>
+			result = iterativeBody.filter(
+			new FilterFunction <Tuple2 <Long, Object>>() {
+				private static final long serialVersionUID = -5436758453355074895L;
 
-		@Override
-		public IterationBodyResult process(
-			DataStreamList variableStreams, DataStreamList dataStreams) {
-			DataStream<LogisticRegressionModelData> modelData = variableStreams.get(0);
-			DataStream<Tuple3 <Long, Vector, Double>> points = dataStreams.get(0);
-			int parallelism = points.getParallelism();
+				@Override
+				public boolean filter(Tuple2 <Long, Object> t2) {
+					// if t2.f0 >= 0 then feedback
+					return (t2.f0 >= 0);
+				}
+			});
 
-			//Preconditions.checkState(
-			//	parallelism <= batchSize,
-			//	"There are more subtasks in the training process than the number "
-			//		+ "of elements in each batch. Some subtasks might be idling forever.");
-			//
-			DataStream<LogisticRegressionModelData> newModelData = null;
-			//	points.countWindowAll(batchSize)
-			//		.apply(new GlobalBatchCreator())
-			//		.flatMap(new GlobalBatchSplitter(parallelism))
-			//		.rebalance()
-			//		.connect(modelData.broadcast())
-			//		.transform(
-			//			"ModelDataLocalUpdater",
-			//			TypeInformation.of(LogisticRegressionModelData.class),
-			//			new ModelDataLocalUpdater(distanceMeasure, k, decayFactor))
-			//		.setParallelism(parallelism)
-			//		.countWindowAll(parallelism)
-			//		.reduce(new ModelDataGlobalReducer());
-			//
-			return new IterationBodyResult(DataStreamList.of(newModelData), DataStreamList.of(modelData));
-		}
+		DataStream <Tuple2 <Long, Object>> output = iterativeBody.filter(
+			new FilterFunction <Tuple2 <Long, Object>>() {
+				private static final long serialVersionUID = 4204787383191799107L;
+
+				@Override
+				public boolean filter(Tuple2 <Long, Object> t2) {
+					/* if t2.f0 small than 0, then output */
+					return t2.f0 < 0;
+				}
+			});
+
+		iteration.closeWith(result);
+
+		DataStream <DenseVector> models = output.map(
+			(MapFunction <Tuple2 <Long, Object>, DenseVector>) value -> new DenseVector(
+				(double[]) value.f1));
+
+		//ReadWriteUtils.updateExistingParams(modelStream, paramMap);
+
+		return new FtrlModel().setModelData(tEnv.fromDataStream(models));
 	}
 
 	public static class ParseSample
@@ -320,8 +336,8 @@ public class FtrlNew implements Estimator <FtrlNew, FtrlModel>, FtrlParams <Ftrl
 			Thread.sleep(1000);
 
 			if (this.coef == null) {
-				LogisticRegressionModelData logisticRegressionModelData =
-					(LogisticRegressionModelData)
+				LinearModelData logisticRegressionModelData =
+					(LinearModelData)
 						getRuntimeContext().getBroadcastVariable("initModel").get(0);
 				DenseVector coefVector = logisticRegressionModelData.coefficient;
 				int localSize = vectorSize / numWorkers;

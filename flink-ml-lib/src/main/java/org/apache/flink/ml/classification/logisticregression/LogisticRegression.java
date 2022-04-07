@@ -135,7 +135,7 @@ public class LogisticRegression
                         .broadcast()
                         .map(double[]::new);
 
-        DataStream<LogisticRegressionModelData> modelData = train(trainData, initModelData);
+        DataStream<LinearModelData> modelData = train(trainData, initModelData);
         LogisticRegressionModel model =
                 new LogisticRegressionModel().setModelData(tEnv.fromDataStream(modelData));
         ReadWriteUtils.updateExistingParams(model, paramMap);
@@ -192,7 +192,7 @@ public class LogisticRegression
      * @param initModelData The initialized model.
      * @return The trained model data.
      */
-    private DataStream<LogisticRegressionModelData> train(
+    private DataStream<LinearModelData> train(
             DataStream<LabeledPointWithWeight> trainData, DataStream<double[]> initModelData) {
         LogisticGradient logisticGradient = new LogisticGradient(getReg());
         DataStreamList resultList =
@@ -243,8 +243,8 @@ public class LogisticRegression
             // lossSum.
             DataStream<double[]> variableStream = variableStreams.get(0);
             DataStream<LabeledPointWithWeight> trainData = dataStreams.get(0);
-            final OutputTag<LogisticRegressionModelData> modelDataOutputTag =
-                    new OutputTag<LogisticRegressionModelData>("MODEL_OUTPUT") {};
+            final OutputTag<LinearModelData> modelDataOutputTag =
+                    new OutputTag<LinearModelData>("MODEL_OUTPUT") {};
             SingleOutputStreamOperator<double[]> gradientAndWeightAndLoss =
                     trainData
                             .connect(variableStream)
@@ -318,13 +318,13 @@ public class LogisticRegression
 
         private ListState<double[]> feedbackBufferState;
 
-        private final OutputTag<LogisticRegressionModelData> modelDataOutputTag;
+        private final OutputTag<LinearModelData> modelDataOutputTag;
 
         public CacheDataAndDoTrain(
                 LogisticGradient logisticGradient,
                 int globalBatchSize,
                 double learningRate,
-                OutputTag<LogisticRegressionModelData> modelDataOutputTag) {
+                OutputTag<LinearModelData> modelDataOutputTag) {
             this.logisticGradient = logisticGradient;
             this.globalBatchSize = globalBatchSize;
             this.learningRate = learningRate;
@@ -392,7 +392,7 @@ public class LogisticRegression
             feedbackBufferState.clear();
             if (getRuntimeContext().getIndexOfThisSubtask() == 0) {
                 updateModel();
-                context.output(modelDataOutputTag, new LogisticRegressionModelData(coefficient));
+                context.output(modelDataOutputTag, new LinearModelData(coefficient, 0L));
             }
         }
 

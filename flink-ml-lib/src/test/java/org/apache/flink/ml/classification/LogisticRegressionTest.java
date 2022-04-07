@@ -25,7 +25,7 @@ import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.classification.logisticregression.LogisticRegression;
 import org.apache.flink.ml.classification.logisticregression.LogisticRegressionModel;
-import org.apache.flink.ml.classification.logisticregression.LogisticRegressionModelData;
+import org.apache.flink.ml.classification.logisticregression.LinearModelData;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.Vectors;
 import org.apache.flink.ml.util.ReadWriteUtils;
@@ -231,7 +231,7 @@ public class LogisticRegressionTest {
         LogisticRegressionModel model = logisticRegression.fit(binomialDataTable);
         model = StageTestUtils.saveAndReload(env, model, tempFolder.newFolder().getAbsolutePath());
         assertEquals(
-                Collections.singletonList("coefficient"),
+                Arrays.asList("coefficient", "modelVersion"),
                 model.getModelData()[0].getResolvedSchema().getColumnNames());
         Table output = model.transform(binomialDataTable)[0];
         verifyPredictionResult(
@@ -245,8 +245,8 @@ public class LogisticRegressionTest {
     public void testGetModelData() throws Exception {
         LogisticRegression logisticRegression = new LogisticRegression().setWeightCol("weight");
         LogisticRegressionModel model = logisticRegression.fit(binomialDataTable);
-        LogisticRegressionModelData modelData =
-                LogisticRegressionModelData.getModelDataStream(model.getModelData()[0])
+        LinearModelData modelData =
+                LinearModelData.getModelDataStream(model.getModelData()[0])
                         .executeAndCollect()
                         .next();
         assertNotNull(modelData);
