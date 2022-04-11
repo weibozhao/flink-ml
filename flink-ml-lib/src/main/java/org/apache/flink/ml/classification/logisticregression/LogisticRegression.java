@@ -18,6 +18,7 @@
 
 package org.apache.flink.ml.classification.logisticregression;
 
+import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.ml.api.Estimator;
 import org.apache.flink.ml.common.datastream.DataStreamUtils;
@@ -110,7 +111,9 @@ public class LogisticRegression
                 optimizer.optimize(initModelData, trainData, BinaryLogisticLoss.INSTANCE);
 
         DataStream<LogisticRegressionModelData> modelData =
-                rawModelData.map(LogisticRegressionModelData::new);
+                rawModelData.map(
+                        (MapFunction<DenseVector, LogisticRegressionModelData>)
+                                denseVector -> new LogisticRegressionModelData(denseVector, 0L));
         LogisticRegressionModel model =
                 new LogisticRegressionModel().setModelData(tEnv.fromDataStream(modelData));
         ReadWriteUtils.updateExistingParams(model, paramMap);

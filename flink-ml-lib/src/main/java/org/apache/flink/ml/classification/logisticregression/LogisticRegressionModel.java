@@ -27,6 +27,7 @@ import org.apache.flink.ml.common.broadcast.BroadcastUtils;
 import org.apache.flink.ml.common.datastream.TableUtils;
 import org.apache.flink.ml.linalg.BLAS;
 import org.apache.flink.ml.linalg.DenseVector;
+import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.linalg.Vectors;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
@@ -161,7 +162,8 @@ public class LogisticRegressionModel
      * @param coefficient The model parameters.
      * @return The prediction label and the raw probabilities.
      */
-    private static Row predictOneDataPoint(DenseVector feature, DenseVector coefficient) {
+    public static Row predictOneDataPoint(Vector feature, DenseVector coefficient) {
+
         double dotValue = BLAS.dot(feature, coefficient);
         double prob = 1 - 1.0 / (1.0 + Math.exp(dotValue));
         return Row.of(dotValue >= 0 ? 1. : 0., Vectors.dense(1 - prob, prob));
