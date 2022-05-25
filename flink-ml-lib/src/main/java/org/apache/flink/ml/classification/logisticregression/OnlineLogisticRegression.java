@@ -305,6 +305,7 @@ public class OnlineLogisticRegression
         private double[] gradient;
         private double[] weight;
         private int[] denseVectorIndices;
+        private int iter = 0;
 
         @Override
         public void initializeState(StateInitializationContext context) throws Exception {
@@ -394,6 +395,7 @@ public class OnlineLogisticRegression
 
         @Override
         public void processElement2(StreamRecord<DenseVector> modelDataRecord) throws Exception {
+            System.out.println("feedback : " + iter++);
             modelDataState.add(modelDataRecord.getValue());
             calculateGradient();
         }
