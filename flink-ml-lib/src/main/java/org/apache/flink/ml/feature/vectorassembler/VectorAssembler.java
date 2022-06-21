@@ -83,7 +83,8 @@ public class VectorAssembler
     private static class AssemblerFunc implements FlatMapFunction<Row, Row> {
         private final String[] inputCols;
         private final String handleInvalid;
-
+        private int cnt = 0;
+        private long time;
         public AssemblerFunc(String[] inputCols, String handleInvalid) {
             this.inputCols = inputCols;
             this.handleInvalid = handleInvalid;
@@ -91,6 +92,12 @@ public class VectorAssembler
 
         @Override
         public void flatMap(Row value, Collector<Row> out) throws Exception {
+            if (cnt == 0) {
+                time = System.currentTimeMillis();
+            } else if (cnt % 100000 == 0) {
+                System.out.println(System.currentTimeMillis() - time);
+            }
+            cnt++;
             try {
                 Object[] objects = new Object[inputCols.length];
                 for (int i = 0; i < objects.length; ++i) {
