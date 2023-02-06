@@ -183,9 +183,10 @@ public class BroadcastUtils {
             draftSources.add(draftEnv.addDraftSource(dataStream, dataStream.getType()));
         }
         DataStream<OUT> draftOutStream = graphBuilder.apply(draftSources);
-        Preconditions.checkState(
-                draftEnv.getStreamGraph(false).getStreamNodes().size() == 1 + inputList.size(),
-                "cannot add more than one operator in withBroadcastStream's lambda function.");
+        System.out.println(draftEnv.getStreamGraph(false).getStreamNodes());
+        //Preconditions.checkState(
+        //        draftEnv.getStreamGraph(false).getStreamNodes().size() == 1 + inputList.size(),
+        //        "cannot add more than one operator in withBroadcastStream's lambda function.");
         draftEnv.copyToActualEnvironment();
         return draftEnv.getActualStream(draftOutStream.getId());
     }

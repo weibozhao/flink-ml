@@ -146,6 +146,9 @@ public abstract class AbstractBroadcastWrapperOperator<T, S extends StreamOperat
     /** whether each input has pending elements. */
     protected boolean[] hasPendingElements;
 
+    /** Whether this operator contains RichFunction. */
+    protected boolean hasRichFunction;
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     AbstractBroadcastWrapperOperator(
             StreamOperatorParameters<T> parameters,
@@ -169,7 +172,7 @@ public abstract class AbstractBroadcastWrapperOperator<T, S extends StreamOperat
                                         parameters.getOperatorEventDispatcher())
                                 .f0;
 
-        boolean hasRichFunction =
+        hasRichFunction =
                 wrappedOperator instanceof AbstractUdfStreamOperator
                         && ((AbstractUdfStreamOperator) wrappedOperator).getUserFunction()
                                 instanceof RichFunction;
@@ -189,11 +192,11 @@ public abstract class AbstractBroadcastWrapperOperator<T, S extends StreamOperat
             ((RichFunction) ((AbstractUdfStreamOperator) wrappedOperator).getUserFunction())
                     .setRuntimeContext(wrappedOperatorRuntimeContext);
         } else {
-            throw new RuntimeException(
-                    "The operator is not a instance of "
-                            + AbstractUdfStreamOperator.class.getSimpleName()
-                            + " that contains a "
-                            + RichFunction.class.getSimpleName());
+            //throw new RuntimeException(
+            //    "The operator is not a instance of "
+            //        + AbstractUdfStreamOperator.class.getSimpleName()
+            //        + " that contains a "
+            //        + RichFunction.class.getSimpleName());
         }
 
         this.mailboxExecutor =
@@ -232,6 +235,9 @@ public abstract class AbstractBroadcastWrapperOperator<T, S extends StreamOperat
      * @return true if all broadcast variables are ready, false otherwise.
      */
     protected boolean areBroadcastVariablesReady() {
+        if (!hasRichFunction) {
+            return true;
+        }
         if (broadcastVariablesReady) {
             return true;
         }
