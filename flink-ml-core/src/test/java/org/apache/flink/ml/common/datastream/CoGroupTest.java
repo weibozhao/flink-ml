@@ -327,41 +327,41 @@ public class CoGroupTest {
 						DataStream <Long> dataStream1 = input.get(0);
 						DataStream <Long> dataStream2 = input.get(1);
 						DataStream <Long> dataStream3 = input.get(2);
-						DataStream <Long> broad = dataStream2.coGroup(dataStream3)
-							.where((KeySelector <Long, Long>) t2 -> t2)
-							.equalTo((KeySelector <Long, Long>) t2 -> t2)
-							.window(EndOfStreamWindows.get())
-							.apply(
-								new RichCoGroupFunction <Long, Long, Long>() {
-									@Override
-									public void coGroup(Iterable <Long> iterable,
-														Iterable <Long> iterable1,
-														Collector <Long> collector) {
-										System.out.println(getRuntimeContext().getClass().getSimpleName());
-										Long b = (Long) getRuntimeContext().getBroadcastVariable("broadcast").get(0);
-										System.out.println(b);
-										for (Long iter : iterable) {
-											if (iter == null) {
-												continue;
-											}
-											collector.collect(iter);
-											System.out.println(
-												getRuntimeContext().getIndexOfThisSubtask() + " " + iter);
-										}
-										for (Long iter : iterable1) {
-											if (iter == null) {
-												continue;
-											}
-											System.out.println(
-												getRuntimeContext().getIndexOfThisSubtask() + " " + iter);
-											collector.collect(iter);
-
-										}
-									}
-								});
+						//DataStream <Long> broad = dataStream2.coGroup(dataStream3)
+						//	.where((KeySelector <Long, Long>) t2 -> t2)
+						//	.equalTo((KeySelector <Long, Long>) t2 -> t2)
+						//	.window(EndOfStreamWindows.get())
+						//	.apply(
+						//		new RichCoGroupFunction <Long, Long, Long>() {
+						//			@Override
+						//			public void coGroup(Iterable <Long> iterable,
+						//								Iterable <Long> iterable1,
+						//								Collector <Long> collector) {
+						//				System.out.println(getRuntimeContext().getClass().getSimpleName());
+						//				Long b = (Long) getRuntimeContext().getBroadcastVariable("broadcast").get(0);
+						//				System.out.println(b);
+						//				for (Long iter : iterable) {
+						//					if (iter == null) {
+						//						continue;
+						//					}
+						//					collector.collect(iter);
+						//					System.out.println(
+						//						getRuntimeContext().getIndexOfThisSubtask() + " " + iter);
+						//				}
+						//				for (Long iter : iterable1) {
+						//					if (iter == null) {
+						//						continue;
+						//					}
+						//					System.out.println(
+						//						getRuntimeContext().getIndexOfThisSubtask() + " " + iter);
+						//					collector.collect(iter);
+						//
+						//				}
+						//			}
+						//		});
 						DataStream <Long> coResult = BroadcastUtils.withBroadcastStream(
 							Arrays.asList(dataStream1, dataStream2),
-							Collections.singletonMap("broadcast", broad),
+							Collections.singletonMap("broadcast", dataStream3),
 							inputList -> {
 								DataStream <Long> data1
 									= (DataStream <Long>) inputList.get(0);
