@@ -27,6 +27,7 @@ import org.apache.flink.streaming.api.operators.StreamOperatorParameters;
 import org.apache.flink.streaming.runtime.partitioner.StreamPartitioner;
 import org.apache.flink.util.OutputTag;
 
+/** Default wrapper. */
 public class DefaultWrapper<T> implements OperatorWrapper<T, T> {
 
     public DefaultWrapper() {}

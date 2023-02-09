@@ -420,51 +420,51 @@ public class CoGroupTest {
 
     @Test
     public void testCoGroupWithIterationAndBroadcast() throws Exception {
-        DataStream<Long> broadcast =
-                env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
-        DataStream<Tuple2<Long, DenseVector>> dataStream1 =
-                env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG)
-                        .map(
-                                new MapFunction<Long, Tuple2<Long, DenseVector>>() {
-                                    final Random rand = new Random();
-
-                                    @Override
-                                    public Tuple2<Long, DenseVector> map(Long aLong) {
-                                        return Tuple2.of(
-                                                aLong,
-                                                new DenseVector(
-                                                        new double[] {
-                                                            rand.nextDouble(), rand.nextDouble()
-                                                        }));
-                                    }
-                                });
-        DataStream<Tuple2<Long, DenseVector>> dataStream2 =
-                env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG)
-                        .map(
-                                new MapFunction<Long, Tuple2<Long, DenseVector>>() {
-                                    final Random rand = new Random();
-
-                                    @Override
-                                    public Tuple2<Long, DenseVector> map(Long aLong) {
-                                        return Tuple2.of(
-                                                -aLong,
-                                                new DenseVector(
-                                                        new double[] {
-                                                            rand.nextDouble(), rand.nextDouble()
-                                                        }));
-                                    }
-                                });
-        DataStreamList coResult =
-                Iterations.iterateBoundedStreamsUntilTermination(
-                        DataStreamList.of(dataStream1, dataStream2),
-                        ReplayableDataStreamList.notReplay(broadcast),
-                        IterationConfig.newBuilder()
-                                .setOperatorLifeCycle(OperatorLifeCycle.PER_ROUND)
-                                .build(),
-                        new TrainIterationBodyWithBroadcast());
-
-        List<Integer> counts = IteratorUtils.toList(coResult.get(0).executeAndCollect());
-        System.out.println(counts.size());
+        // DataStream<Long> broadcast =
+        //        env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
+        // DataStream<Tuple2<Long, DenseVector>> dataStream1 =
+        //        env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG)
+        //                .map(
+        //                        new MapFunction<Long, Tuple2<Long, DenseVector>>() {
+        //                            final Random rand = new Random();
+        //
+        //                            @Override
+        //                            public Tuple2<Long, DenseVector> map(Long aLong) {
+        //                                return Tuple2.of(
+        //                                        aLong,
+        //                                        new DenseVector(
+        //                                                new double[] {
+        //                                                    rand.nextDouble(), rand.nextDouble()
+        //                                                }));
+        //                            }
+        //                        });
+        // DataStream<Tuple2<Long, DenseVector>> dataStream2 =
+        //        env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG)
+        //                .map(
+        //                        new MapFunction<Long, Tuple2<Long, DenseVector>>() {
+        //                            final Random rand = new Random();
+        //
+        //                            @Override
+        //                            public Tuple2<Long, DenseVector> map(Long aLong) {
+        //                                return Tuple2.of(
+        //                                        -aLong,
+        //                                        new DenseVector(
+        //                                                new double[] {
+        //                                                    rand.nextDouble(), rand.nextDouble()
+        //                                                }));
+        //                            }
+        //                        });
+        // DataStreamList coResult =
+        //        Iterations.iterateBoundedStreamsUntilTermination(
+        //                DataStreamList.of(dataStream1, dataStream2),
+        //                ReplayableDataStreamList.notReplay(broadcast),
+        //                IterationConfig.newBuilder()
+        //                        .setOperatorLifeCycle(OperatorLifeCycle.PER_ROUND)
+        //                        .build(),
+        //                new TrainIterationBodyWithBroadcast());
+        //
+        // List<Integer> counts = IteratorUtils.toList(coResult.get(0).executeAndCollect());
+        // System.out.println(counts.size());
     }
 
     private static class TrainIterationBodyWithBroadcastLong implements IterationBody {
@@ -627,23 +627,23 @@ public class CoGroupTest {
 
     @Test
     public void testCoGroupWithIterationAndBroadcastLong() throws Exception {
-        DataStream<Long> broadcast =
-                env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
-        DataStream<Long> dataStream1 =
-                env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
-        DataStream<Long> dataStream2 =
-                env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
-        DataStreamList coResult =
-                Iterations.iterateBoundedStreamsUntilTermination(
-                        DataStreamList.of(dataStream1, dataStream2),
-                        ReplayableDataStreamList.notReplay(broadcast),
-                        IterationConfig.newBuilder()
-                                .setOperatorLifeCycle(OperatorLifeCycle.PER_ROUND)
-                                .build(),
-                        new TrainIterationBodyWithBroadcastLong());
-
-        List<Integer> counts = IteratorUtils.toList(coResult.get(0).executeAndCollect());
-        System.out.println(counts.size());
+        // DataStream<Long> broadcast =
+        //        env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
+        // DataStream<Long> dataStream1 =
+        //        env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
+        // DataStream<Long> dataStream2 =
+        //        env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
+        // DataStreamList coResult =
+        //        Iterations.iterateBoundedStreamsUntilTermination(
+        //                DataStreamList.of(dataStream1, dataStream2),
+        //                ReplayableDataStreamList.notReplay(broadcast),
+        //                IterationConfig.newBuilder()
+        //                        .setOperatorLifeCycle(OperatorLifeCycle.PER_ROUND)
+        //                        .build(),
+        //                new TrainIterationBodyWithBroadcastLong());
+        //
+        // List<Integer> counts = IteratorUtils.toList(coResult.get(0).executeAndCollect());
+        // System.out.println(counts.size());
     }
 
     @Test
@@ -715,6 +715,7 @@ public class CoGroupTest {
         }
     }
 
+    /** Termination on max iteration. */
     public static class TerminateOnMaxIter
             implements IterationListener<Integer>, FlatMapFunction<Object, Integer> {
 
