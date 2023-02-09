@@ -27,10 +27,12 @@ import org.apache.flink.api.common.functions.RichFilterFunction;
 import org.apache.flink.api.common.functions.RichFlatMapFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.functions.RichMapPartitionFunction;
+import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.tuple.Tuple4;
+import org.apache.flink.api.java.typeutils.GenericTypeInfo;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.iteration.DataStreamList;
 import org.apache.flink.iteration.IterationBody;
@@ -112,15 +114,15 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                             ((Number) user).longValue(),
                                             ((Number) item).longValue(),
                                             ((Number) rating).floatValue());
-                                });
+                                }).returns(Types.TUPLE(Types.LONG, Types.LONG, Types.FLOAT));
 
         DataStream<Ratings> graphData = initGraph(alsInput);
         DataStream<Factors> userItemFactors = initFactors(graphData, getRank(), getSeed());
 
         DataStreamList result =
                 Iterations.iterateBoundedStreamsUntilTermination(
-                        DataStreamList.of(graphData),
-                        ReplayableDataStreamList.notReplay(userItemFactors),
+                        DataStreamList.of(userItemFactors),
+                        ReplayableDataStreamList.replay(graphData),
                         IterationConfig.newBuilder()
                                 .setOperatorLifeCycle(OperatorLifeCycle.PER_ROUND)
                                 .build(),
@@ -129,22 +131,24 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
 
         DataStream<AlsModelData> modelData =
                 DataStreamUtils.mapPartition(
-                        result.get(0),
-                        (MapPartitionFunction<Factors, AlsModelData>)
-                                (iterable, collector) -> {
-                                    List<Tuple2<Long, float[]>> userFactors = new ArrayList<>();
-                                    List<Tuple2<Long, float[]>> itemFactors = new ArrayList<>();
-                                    for (Factors factors : iterable) {
-                                        if (factors.identity == 0) {
-                                            userFactors.add(
-                                                    Tuple2.of(factors.nodeId, factors.factors));
-                                        } else {
-                                            itemFactors.add(
-                                                    Tuple2.of(factors.nodeId, factors.factors));
-                                        }
-                                    }
-                                    collector.collect(new AlsModelData(userFactors, itemFactors));
-                                });
+                    result.get(0),
+                    new MapPartitionFunction <Factors, AlsModelData>() {
+                        @Override
+                        public void mapPartition(Iterable <Factors> iterable, Collector <AlsModelData> collector) {
+                            List<Tuple2<Long, float[]>> userFactors = new ArrayList<>();
+                            List<Tuple2<Long, float[]>> itemFactors = new ArrayList<>();
+                            for (Factors factors : iterable) {
+                                if (factors.identity == 0) {
+                                    userFactors.add(
+                                        Tuple2.of(factors.nodeId, factors.factors));
+                                } else {
+                                    itemFactors.add(
+                                        Tuple2.of(factors.nodeId, factors.factors));
+                                }
+                            }
+                            collector.collect(new AlsModelData(userFactors, itemFactors));
+                        }
+                    });
         modelData.getTransformation().setParallelism(1);
 
         AlsModel model = new AlsModel().setModelData(tEnv.fromDataStream(modelData));
@@ -241,7 +245,13 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                 out.collect(Tuple4.of(value.f1, value.f0, value.f2, (byte) 1));
                             }
                         })
-                .keyBy(value -> Pair.of(value.f3, value.f0))
+                .keyBy(new KeySelector <Tuple4<Long, Long, Float, Byte>, Pair<Byte, Long>>() {
+                           @Override
+                           public Pair <Byte, Long> getKey(Tuple4 <Long, Long, Float, Byte> value)
+                               throws Exception {
+                               return Pair.of(value.f3, value.f0);
+                           }
+                       })
                 .window(EndOfStreamWindows.get())
                 .process(
                         new ProcessWindowFunction<
@@ -281,7 +291,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
 
                                 collector.collect(r);
                             }
-                        })
+                        }).returns(GenericTypeInfo.of(Ratings.class))
                 .name("init_graph");
     }
 
@@ -339,58 +349,57 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
 
                                                 @Override
                                                 public void open(Configuration parameters) {
-                                                    int stepNo =
-                                                            getIterationRuntimeContext()
-                                                                    .getSuperstepNumber();
-                                                    if (stepNo == 1) {
-                                                        profile =
-                                                                (DataProfile)
-                                                                        getRuntimeContext()
-                                                                                .getBroadcastVariable(
-                                                                                        "profile")
-                                                                                .get(0);
+                                                    if (profile != null) {
+                                                        subStepNo++;
+                                                        if (userOrItem == 0) { // user step
+                                                            if (subStepNo >= numSubsteps) {
+                                                                userOrItem = 1;
+                                                                numSubsteps = profile.numItemBatches;
+                                                                subStepNo = 0;
+                                                            }
+                                                        } else if (userOrItem == 1) { // item step
+                                                            if (subStepNo >= numSubsteps) {
+                                                                userOrItem = 0;
+                                                                numSubsteps = profile.numUserBatches;
+                                                                subStepNo = 0;
+                                                                alsStepNo++;
+                                                            }
+                                                        }
                                                         LOG.info(
-                                                                "Data profile : numItemBatches = {}, numUserBatches = {},"
-                                                                        + " numSamples = {}, numUsers = {}, numItems = {}, parallelism = {}",
-                                                                profile.numItemBatches,
-                                                                profile.numUserBatches,
-                                                                profile.numSamples,
-                                                                profile.numUsers,
-                                                                profile.numItems,
-                                                                profile.parallelism);
+                                                            "ALS step no {}, user or item {}, sub step no {}",
+                                                            alsStepNo,
+                                                            userOrItem,
+                                                            subStepNo);
+                                                    }
+                                                }
+
+                                                @Override
+                                                public boolean filter(Ratings value) {
+                                                    if (profile == null) {
+                                                        profile =
+                                                            (DataProfile)
+                                                                getRuntimeContext()
+                                                                    .getBroadcastVariable(
+                                                                        "profile")
+                                                                    .get(0);
+                                                        LOG.info(
+                                                            "Data profile : numItemBatches = {}, numUserBatches = {},"
+                                                                + " numSamples = {}, numUsers = {}, numItems = {}, parallelism = {}",
+                                                            profile.numItemBatches,
+                                                            profile.numUserBatches,
+                                                            profile.numSamples,
+                                                            profile.numUsers,
+                                                            profile.numItems,
+                                                            profile.parallelism);
                                                         subStepNo = -1;
                                                         userOrItem = 0;
                                                         alsStepNo = 0;
                                                         numSubsteps = profile.numUserBatches;
                                                     }
 
-                                                    subStepNo++;
-                                                    if (userOrItem == 0) { // user step
-                                                        if (subStepNo >= numSubsteps) {
-                                                            userOrItem = 1;
-                                                            numSubsteps = profile.numItemBatches;
-                                                            subStepNo = 0;
-                                                        }
-                                                    } else if (userOrItem == 1) { // item step
-                                                        if (subStepNo >= numSubsteps) {
-                                                            userOrItem = 0;
-                                                            numSubsteps = profile.numUserBatches;
-                                                            subStepNo = 0;
-                                                            alsStepNo++;
-                                                        }
-                                                    }
-                                                    LOG.info(
-                                                            "ALS step no {}, user or item {}, sub step no {}",
-                                                            alsStepNo,
-                                                            userOrItem,
-                                                            subStepNo);
-                                                }
-
-                                                @Override
-                                                public boolean filter(Ratings value) {
                                                     return alsStepNo < numIters
-                                                            && value.identity == userOrItem
-                                                            && Math.abs(value.nodeId) % numSubsteps
+                                                            && value.nodeId == userOrItem
+                                                            && Math.abs(value.identity) % numSubsteps
                                                                     == subStepNo;
                                                 }
                                             });
@@ -539,13 +548,13 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
             // Tuple: Identity, nodeId, factors
             updatedBatchFactors =
                     BroadcastUtils.withBroadcastStream(
-                            Arrays.asList(miniBatch, request),
+                            Arrays.asList(miniBatch, response),
                             Collections.singletonMap("YtY", yty),
                             inputList -> {
                                 DataStream<Tuple2<Integer, Ratings>> data1 =
                                         (DataStream<Tuple2<Integer, Ratings>>) inputList.get(0);
                                 DataStream<Tuple2<Integer, Factors>> data2 =
-                                        (DataStream<Tuple2<Integer, Factors>>) inputList.get(0);
+                                        (DataStream<Tuple2<Integer, Factors>>) inputList.get(1);
                                 // Tuple: partitioId, Ratings
                                 return data1.coGroup(data2) // Tuple: partitionId, Factors
                                         .where(value -> value.f0)
@@ -578,12 +587,18 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         DataStream<Factors> factors =
                 userAndItemFactors
                         .coGroup(updatedBatchFactors)
-                        .where(
-                                (KeySelector<Factors, Tuple2<Byte, Long>>)
-                                        value -> Tuple2.of(value.identity, value.nodeId))
-                        .equalTo(
-                                (KeySelector<Factors, Tuple2<Byte, Long>>)
-                                        value -> Tuple2.of(value.identity, value.nodeId))
+                        .where(new KeySelector <Factors, Tuple2<Byte, Long>>() {
+                                    @Override
+                                    public Tuple2 <Byte, Long> getKey(Factors factors) throws Exception {
+                                        return Tuple2.of(factors.identity, factors.nodeId);
+                                    }
+                                })
+                        .equalTo(new KeySelector <Factors, Tuple2<Byte, Long>>() {
+                                @Override
+                                public Tuple2 <Byte, Long> getKey(Factors factors) throws Exception {
+                                    return Tuple2.of(factors.identity, factors.nodeId);
+                                }
+                            })
                         .window(EndOfStreamWindows.get())
                         .apply(
                                 new RichCoGroupFunction<Factors, Factors, Factors>() {
@@ -656,7 +671,10 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
     }
 
     /** All ratings of a user or an item. */
-    private static class Ratings implements Serializable {
+    private static class Ratings {
+        public Ratings() {
+        }
+
         public byte identity; // 0->user, 1->item
         public long nodeId; // userId or itemId
         public long[] neighbors;
@@ -738,10 +756,11 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                 for (Ratings ratings : values) {
                                     if (ratings.identity == 0) {
                                         numUsers++;
-                                        numRatings += ratings.ratings.length;
+                                        numRatings += ratings.neighbors.length;
                                     } else {
                                         numItems++;
                                     }
+                                    System.out.println("graph data to middle data.");
                                 }
                                 out.collect(Tuple3.of(numUsers, numItems, numRatings));
                             }
@@ -773,11 +792,11 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                 profile.numUsers = value.f0;
                                 profile.numItems = value.f1;
                                 profile.numSamples = value.f2;
-
+                                System.out.println("decide mini batches.");
                                 profile.decideNumMiniBatches(numFactors, parallelism, minBlocks);
                                 return profile;
                             }
-                        })
+                        }).returns(new GenericTypeInfo(Als.DataProfile.class))
                 .name("data_profiling");
     }
 

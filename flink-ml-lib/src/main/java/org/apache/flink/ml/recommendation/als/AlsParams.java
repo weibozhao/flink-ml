@@ -35,7 +35,7 @@ public interface AlsParams<T> extends HasSeed<T>, AlsModelParams<T> {
 
     Param<String> RATING_COL =
             new StringParam(
-                    "ratingCol", "Column name for rating.", null, ParamValidators.notNull());
+                    "ratingCol", "Column name for rating.", "rating", ParamValidators.notNull());
 
     Param<Double> ALPHA =
             new DoubleParam(
