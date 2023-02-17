@@ -651,7 +651,7 @@ public class CoGroupTest {
         DataStream<Long> broadcast =
                 env.fromParallelCollection(new NumberSequenceIterator(0L, 2L), Types.LONG);
         DataStream<Long> dataStream1 =
-                env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
+                env.fromParallelCollection(new NumberSequenceIterator(0L, 2L), Types.LONG);
         DataStreamList coResult =
                 Iterations.iterateBoundedStreamsUntilTermination(
                         DataStreamList.of(dataStream1),
@@ -692,6 +692,7 @@ public class CoGroupTest {
                                                                 public Long map(
                                                                         Long longDenseVectorTuple2)
                                                                         throws Exception {
+                                                                    System.out.println(longDenseVectorTuple2);
                                                                     return longDenseVectorTuple2;
                                                                 }
                                                             });
