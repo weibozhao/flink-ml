@@ -21,6 +21,9 @@ import org.apache.flink.api.common.state.BroadcastState;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.state.MapStateDescriptor;
+import org.apache.flink.api.common.state.StateDescriptor;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.java.typeutils.ListTypeInfo;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
 import org.apache.flink.runtime.state.OperatorStateBackend;
@@ -30,6 +33,7 @@ import org.apache.flink.runtime.state.SnapshotResult;
 import javax.annotation.Nonnull;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.RunnableFuture;
@@ -58,12 +62,24 @@ public class ProxyOperatorStateBackend implements OperatorStateBackend {
         return wrappedBackend.getBroadcastState(newDescriptor);
     }
 
+    private <S> TypeInformation<S> getTypeInfo(ListStateDescriptor<S> stateDescriptor)
+            throws Exception {
+        Field f = StateDescriptor.class.getDeclaredField("typeInfo");
+        f.setAccessible(true);
+        return ((ListTypeInfo) f.get(stateDescriptor)).getElementTypeInfo();
+    }
+
     @Override
     public <S> ListState<S> getListState(ListStateDescriptor<S> stateDescriptor) throws Exception {
         ListStateDescriptor<S> newDescriptor =
-                new ListStateDescriptor<>(
-                        stateNamePrefix.prefix(stateDescriptor.getName()),
-                        stateDescriptor.getElementSerializer());
+                stateDescriptor.isSerializerInitialized()
+                        ? new ListStateDescriptor<>(
+                                stateNamePrefix.prefix(stateDescriptor.getName()),
+                                stateDescriptor.getElementSerializer())
+                        : new ListStateDescriptor<>(
+                                stateNamePrefix.prefix(stateDescriptor.getName()),
+                                getTypeInfo(stateDescriptor));
+
         return wrappedBackend.getListState(newDescriptor);
     }
 
