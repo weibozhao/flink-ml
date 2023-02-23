@@ -91,7 +91,7 @@ public class BoundedMixedLifeCycleStreamIterationITCase extends TestLogger {
                 createJobGraphWithMixedLifeCycle(4, 1000, 5, allRoundResult, perRoundResult);
         miniCluster.executeJobBlocking(jobGraph);
 
-        assertEquals(6, perRoundResult.get().size());
+        assertEquals(7, perRoundResult.get().size());
         Map<Integer, Tuple2<Integer, Integer>> roundsStat =
                 computeRoundStat(perRoundResult.get(), OutputRecord.Event.TERMINATED, 6);
         verifyResult(roundsStat, 6, 1, 4 * (0 + 999) * 1000 / 2);
