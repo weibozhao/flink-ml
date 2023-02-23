@@ -41,9 +41,9 @@ public class TwoInputReducePerRoundOperator extends AbstractStreamOperator<Integ
     public static final OutputTag<OutputRecord<Integer>> OUTPUT_TAG =
             new OutputTag<OutputRecord<Integer>>("output") {};
 
-    private int round;
+    private int round = -1;
 
-    private int sum;
+    private int sum = 0;
 
     private ListState<Integer> roundState;
 

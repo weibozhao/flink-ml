@@ -95,7 +95,7 @@ public class BoundedPerRoundStreamIterationITCase extends TestLogger {
         JobGraph jobGraph = createPerRoundJobGraph(4, 1000, 5, collectedOutputRecord);
         miniCluster.executeJobBlocking(jobGraph);
 
-        assertEquals(5, collectedOutputRecord.get().size());
+        assertEquals(6, collectedOutputRecord.get().size());
         Map<Integer, Tuple2<Integer, Integer>> roundsStat =
                 computeRoundStat(collectedOutputRecord.get(), OutputRecord.Event.TERMINATED, 5);
         verifyResult(roundsStat, 5, 1, 4 * (0 + 999) * 1000 / 2);

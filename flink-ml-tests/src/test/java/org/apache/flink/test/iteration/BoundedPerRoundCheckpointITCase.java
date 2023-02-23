@@ -106,7 +106,7 @@ public class BoundedPerRoundCheckpointITCase extends TestLogger {
             }
 
             // 0 ~ 4 round and termination information
-            assertEquals(4, roundsStat.size());
+            assertEquals(5, roundsStat.size());
             for (int i = 0; i < 4; ++i) {
                 // In this case we could only check the final result, the number of records is not
                 // deterministic.

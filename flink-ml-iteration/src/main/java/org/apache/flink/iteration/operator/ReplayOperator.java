@@ -266,9 +266,6 @@ public class ReplayOperator<T> extends AbstractStreamOperator<IterationRecord<T>
             dataCacheWriter.finish();
             emitEpochWatermark(epochWatermark);
             return;
-        } else if (epochWatermark == Integer.MAX_VALUE) {
-            emitEpochWatermark(epochWatermark);
-            return;
         }
 
         // At this point, there would be no more inputs before we finish replaying all the data.
@@ -278,6 +275,9 @@ public class ReplayOperator<T> extends AbstractStreamOperator<IterationRecord<T>
         currentDataCacheReader =
                 new DataCacheReader<>(typeSerializer, dataCacheWriter.getSegments());
         replayRecords(currentDataCacheReader, epochWatermark);
+        if (epochWatermark == Integer.MAX_VALUE) {
+            emitEpochWatermark(epochWatermark);
+        }
     }
 
     private void replayRecords(DataCacheReader<T> dataCacheReader, int epoch) {
