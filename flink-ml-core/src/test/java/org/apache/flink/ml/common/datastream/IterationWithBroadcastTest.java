@@ -20,6 +20,7 @@ package org.apache.flink.ml.common.datastream;
 
 import org.apache.flink.api.common.functions.FilterFunction;
 import org.apache.flink.api.common.functions.FlatMapFunction;
+import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.RichCoGroupFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
@@ -104,6 +105,363 @@ public class IterationWithBroadcastTest {
         System.out.println(counts.size());
     }
 
+    private static class Rating {
+        public final long id;
+        public final double value;
+
+        public Rating(Long id, double value) {
+            this.id = id;
+            this.value = value;
+        }
+    }
+    @Test
+    public void testCoGroupWithIterationAndBroadcast2() throws Exception {
+        DataStream<Rating> broadcast =
+            env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG)
+                .map(new MapFunction <Long, Rating>() {
+                    @Override
+                    public Rating map(Long aLong) throws Exception {
+                        return new Rating(aLong, 0.1);
+                    }
+                });
+        DataStream<Rating> dataStream1 =
+            env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG)
+                .map(new MapFunction <Long, Rating>() {
+                    @Override
+                    public Rating map(Long aLong) throws Exception {
+                        return new Rating(aLong, 0.1);
+                    }
+                });
+        DataStream<Long> dataStream2 =
+            env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
+        DataStreamList coResult =
+            Iterations.iterateBoundedStreamsUntilTermination(
+                DataStreamList.of(dataStream1, dataStream2),
+                ReplayableDataStreamList.replay(broadcast),
+                IterationConfig.newBuilder()
+                    .setOperatorLifeCycle(OperatorLifeCycle.PER_ROUND)
+                    .build(),
+                new TrainIterationBodyWithBroadcastLong2());
+
+        List<Integer> counts = IteratorUtils.toList(coResult.get(0).executeAndCollect());
+        System.out.println(counts.size());
+    }
+
+    private static class TrainIterationBodyWithBroadcastLong2 implements IterationBody {
+
+        @Override
+        public IterationBodyResult process(
+            DataStreamList variableStreams, DataStreamList dataStreams) {
+
+            DataStreamList feedbackVariableStream =
+                IterationBody.forEachRound(
+                    DataStreamList.of(
+                        variableStreams.get(0),
+                        variableStreams.get(1),
+                        dataStreams.get(0)),
+                    input -> {
+                        DataStream<Rating> dataStream1 = input.get(0);
+                        DataStream<Long> dataStream2 = input.get(1);
+                        DataStream<Rating> broad = input.get(2);
+                        DataStream<Long> coResult1 =
+                            BroadcastUtils.withBroadcastStream(
+                                Arrays.asList(dataStream1, dataStream2),
+                                Collections.singletonMap("broadcast", broad),
+                                inputList -> {
+                                    DataStream<Rating> data1 =
+                                        (DataStream<Rating>) inputList.get(0);
+                                    DataStream<Long> data2 =
+                                        (DataStream<Long>) inputList.get(1);
+
+                                    return data1.coGroup(data2)
+                                        .where(
+                                            (KeySelector<Rating, Long>)
+                                                t2 -> t2.id)
+                                        .equalTo(
+                                            (KeySelector<Long, Long>)
+                                                t2 -> t2)
+                                        .window(EndOfStreamWindows.get())
+                                        .apply(
+                                            new RichCoGroupFunction<
+                                                Rating, Long, Long>() {
+                                                @Override
+                                                public void coGroup(
+                                                    Iterable<Rating>
+                                                        iterable,
+                                                    Iterable<Long>
+                                                        iterable1,
+                                                    Collector<Long>
+                                                        collector) {
+                                                    System.out.println(
+                                                        getRuntimeContext()
+                                                            .getClass()
+                                                            .getSimpleName());
+                                                    Rating b =
+                                                        (Rating)
+                                                            getRuntimeContext()
+                                                                .getBroadcastVariable(
+                                                                    "broadcast")
+                                                                .get(0);
+                                                    System.out.println(b.id + " " + b.value);
+                                                    for (Long iter :
+                                                        iterable1) {
+                                                        if (iter == null) {
+                                                            continue;
+                                                        }
+                                                        collector.collect(
+                                                            iter);
+                                                    }
+                                                }
+                                            });
+                                });
+                        DataStream<Rating> coResult2 =
+                            BroadcastUtils.withBroadcastStream(
+                                Arrays.asList(dataStream1, dataStream2),
+                                Collections.singletonMap("broadcast", broad),
+                                inputList -> {
+                                    DataStream<Rating> data1 =
+                                        (DataStream<Rating>) inputList.get(0);
+                                    DataStream<Long> data2 =
+                                        (DataStream<Long>) inputList.get(1);
+
+                                    return data1.coGroup(data2)
+                                        .where(
+                                            (KeySelector<Rating, Long>)
+                                                t2 -> t2.id)
+                                        .equalTo(
+                                            (KeySelector<Long, Long>)
+                                                t2 -> t2)
+                                        .window(EndOfStreamWindows.get())
+                                        .apply(
+                                            new RichCoGroupFunction<
+                                                Rating, Long, Rating>() {
+                                                @Override
+                                                public void coGroup(
+                                                    Iterable<Rating>
+                                                        iterable,
+                                                    Iterable<Long>
+                                                        iterable1,
+                                                    Collector<Rating>
+                                                        collector) {
+                                                    System.out.println(
+                                                        getRuntimeContext()
+                                                            .getClass()
+                                                            .getSimpleName());
+                                                    Rating b =
+                                                        (Rating)
+                                                            getRuntimeContext()
+                                                                .getBroadcastVariable(
+                                                                    "broadcast")
+                                                                .get(
+                                                                    0);
+                                                    System.out.println(b.id + " " + b.value);
+                                                    for (Rating iter :
+                                                        iterable) {
+                                                        if (iter == null) {
+                                                            continue;
+                                                        }
+                                                        collector.collect(
+                                                            iter);
+                                                    }
+                                                }
+                                            });
+                                });
+
+                        return DataStreamList.of(
+                            coResult2,
+                            coResult1);
+                    });
+
+            DataStream<Integer> terminationCriteria =
+                feedbackVariableStream
+                    .get(0)
+                    .flatMap(new TerminateOnMaxIter(2))
+                    .returns(Types.INT);
+
+            return new IterationBodyResult(
+                feedbackVariableStream, variableStreams, terminationCriteria);
+        }
+    }
+
+    @Test
+    public void testCoGroupWithIterationAndBroadcast1() throws Exception {
+        DataStream<Long> broadcast =
+            env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
+        DataStream<Long> dataStream1 =
+            env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
+        DataStream<Long> dataStream2 =
+            env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
+        DataStreamList coResult =
+            Iterations.iterateBoundedStreamsUntilTermination(
+                DataStreamList.of(dataStream1, dataStream2),
+                ReplayableDataStreamList.replay(broadcast),
+                IterationConfig.newBuilder()
+                    .setOperatorLifeCycle(OperatorLifeCycle.PER_ROUND)
+                    .build(),
+                new TrainIterationBodyWithBroadcastLong1());
+
+        List<Integer> counts = IteratorUtils.toList(coResult.get(0).executeAndCollect());
+        System.out.println(counts.size());
+    }
+
+    private static class TrainIterationBodyWithBroadcastLong1 implements IterationBody {
+
+        @Override
+        public IterationBodyResult process(
+            DataStreamList variableStreams, DataStreamList dataStreams) {
+
+            DataStreamList feedbackVariableStream =
+                IterationBody.forEachRound(
+                    DataStreamList.of(
+                        variableStreams.get(0),
+                        variableStreams.get(1),
+                        dataStreams.get(0)),
+                    input -> {
+                        DataStream<Long> dataStream1 = input.get(0);
+                        DataStream<Long> dataStream2 = input.get(1);
+                        DataStream<Long> dataStream3 = input.get(2);
+                        DataStream<Long> broad =
+                            dataStream2
+                                .coGroup(dataStream3)
+                                .where((KeySelector<Long, Long>) t2 -> t2)
+                                .equalTo((KeySelector<Long, Long>) t2 -> t2)
+                                .window(EndOfStreamWindows.get())
+                                .apply(
+                                    new RichCoGroupFunction<
+                                        Long, Long, Long>() {
+                                        @Override
+                                        public void coGroup(
+                                            Iterable<Long> iterable,
+                                            Iterable<Long> iterable1,
+                                            Collector<Long> collector) {
+                                            System.out.println(
+                                                getRuntimeContext()
+                                                    .getClass()
+                                                    .getSimpleName());
+                                            Long b =
+                                                (Long)
+                                                    getRuntimeContext()
+                                                        .getBroadcastVariable(
+                                                            "broadcast")
+                                                        .get(0);
+                                            System.out.println(b);
+                                            for (Long iter : iterable) {
+                                                if (iter == null) {
+                                                    continue;
+                                                }
+                                                collector.collect(iter);
+                                                System.out.println(
+                                                    getRuntimeContext()
+                                                        .getIndexOfThisSubtask()
+                                                        + " "
+                                                        + iter);
+                                            }
+                                            for (Long iter : iterable1) {
+                                                if (iter == null) {
+                                                    continue;
+                                                }
+                                                System.out.println(
+                                                    getRuntimeContext()
+                                                        .getIndexOfThisSubtask()
+                                                        + " "
+                                                        + iter);
+                                                collector.collect(iter);
+                                            }
+                                        }
+                                    });
+                        DataStream<Long> coResult =
+                            BroadcastUtils.withBroadcastStream(
+                                Arrays.asList(dataStream1, dataStream2),
+                                Collections.singletonMap("broadcast", broad),
+                                inputList -> {
+                                    DataStream<Long> data1 =
+                                        (DataStream<Long>) inputList.get(0);
+                                    DataStream<Long> data2 =
+                                        (DataStream<Long>) inputList.get(1);
+
+                                    return data1.coGroup(data2)
+                                        .where(
+                                            (KeySelector<Long, Long>)
+                                                t2 -> t2)
+                                        .equalTo(
+                                            (KeySelector<Long, Long>)
+                                                t2 -> t2)
+                                        .window(EndOfStreamWindows.get())
+                                        .apply(
+                                            new RichCoGroupFunction<
+                                                Long, Long, Long>() {
+                                                @Override
+                                                public void coGroup(
+                                                    Iterable<Long>
+                                                        iterable,
+                                                    Iterable<Long>
+                                                        iterable1,
+                                                    Collector<Long>
+                                                        collector) {
+                                                    System.out.println(
+                                                        getRuntimeContext()
+                                                            .getClass()
+                                                            .getSimpleName());
+                                                    Long b =
+                                                        (Long)
+                                                            getRuntimeContext()
+                                                                .getBroadcastVariable(
+                                                                    "broadcast")
+                                                                .get(
+                                                                    0);
+                                                    System.out.println(b);
+                                                    for (Long iter :
+                                                        iterable) {
+                                                        if (iter == null) {
+                                                            continue;
+                                                        }
+                                                        collector.collect(
+                                                            iter);
+                                                        System.out.println(
+                                                            getRuntimeContext()
+                                                                .getIndexOfThisSubtask()
+                                                                + " "
+                                                                + iter);
+                                                    }
+                                                    for (Long iter :
+                                                        iterable1) {
+                                                        if (iter == null) {
+                                                            continue;
+                                                        }
+                                                        System.out.println(
+                                                            getRuntimeContext()
+                                                                .getIndexOfThisSubtask()
+                                                                + " "
+                                                                + iter);
+                                                        collector.collect(
+                                                            iter);
+                                                    }
+                                                }
+                                            });
+                                });
+
+                        return DataStreamList.of(
+                            coResult.filter(
+                                (FilterFunction<Long>)
+                                    longDenseVectorTuple2 ->
+                                        longDenseVectorTuple2 > 0L),
+                            coResult.filter(
+                                (FilterFunction<Long>)
+                                    longDenseVectorTuple2 ->
+                                        longDenseVectorTuple2 < 0L));
+                    });
+
+            DataStream<Integer> terminationCriteria =
+                feedbackVariableStream
+                    .get(0)
+                    .flatMap(new TerminateOnMaxIter(2))
+                    .returns(Types.INT);
+
+            return new IterationBodyResult(
+                feedbackVariableStream, variableStreams, terminationCriteria);
+        }
+    }
+
     private static class IterationBodyWithBroadcast implements IterationBody {
 
         @Override
@@ -118,7 +476,7 @@ public class IterationWithBroadcastTest {
 
                         DataStream <Long> coResult =
                             BroadcastUtils.withBroadcastStream(
-                                Arrays.asList(dataStream1),
+                                Collections.singletonList(dataStream1),
                                 Collections.singletonMap(
                                     "broadcast", dataStreams.get(0)),
                                 inputList -> {
