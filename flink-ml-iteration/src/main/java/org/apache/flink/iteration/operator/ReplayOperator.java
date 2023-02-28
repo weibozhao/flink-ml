@@ -112,6 +112,9 @@ public class ReplayOperator<T> extends AbstractStreamOperator<IterationRecord<T>
                             config.getTypeSerializerOut(getClass().getClassLoader());
             typeSerializer = iterationRecordSerializer.getInnerSerializer();
 
+            if (typeSerializer instanceof IterationRecordSerializer) {
+                System.out.println("typeSerializer err. IterationRecordSerializer");
+            }
             mailboxExecutor =
                     containingTask
                             .getMailboxExecutorFactory()

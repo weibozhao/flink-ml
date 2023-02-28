@@ -469,7 +469,8 @@ public class DataStreamUtils {
         @Override
         public void initializeState(StateInitializationContext context) throws Exception {
             super.initializeState(context);
-
+            System.out.println(getOperatorConfig().getTypeSerializerIn(0, getClass().getClassLoader()));
+            System.out.println(getOperatorConfig() + " config *********************************************************************************** ");
             valuesState =
                     new ListStateWithCache<>(
                             getOperatorConfig().getTypeSerializerIn(0, getClass().getClassLoader()),

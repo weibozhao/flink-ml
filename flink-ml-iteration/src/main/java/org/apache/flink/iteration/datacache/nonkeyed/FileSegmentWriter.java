@@ -25,10 +25,13 @@ import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
+import org.apache.flink.iteration.typeinfo.IterationRecordSerializer;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ser.std.IterableSerializer;
 
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.util.Optional;
+import java.util.Random;
 
 /** A class that writes cache data to a target file in given file system. */
 @Internal
@@ -65,8 +68,19 @@ class FileSegmentWriter<T> implements SegmentWriter<T> {
         if (outputStream.getPos() >= DataCacheWriter.MAX_SEGMENT_SIZE) {
             return false;
         }
+        int id = new Random().nextInt();
+        System.out.println(serializer + " " + id);
+        if(serializer instanceof IterationRecordSerializer) {
+            System.out.println("err happends. **************************************");
+            System.out.println(record);
+            // return true;
+            //
+        }
         serializer.serialize(record, outputView);
+
         count++;
+        System.out.println(serializer + " " + id);
+
         return true;
     }
 
