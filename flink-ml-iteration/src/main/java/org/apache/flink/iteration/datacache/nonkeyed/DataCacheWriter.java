@@ -21,6 +21,7 @@ package org.apache.flink.iteration.datacache.nonkeyed;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.iteration.typeinfo.IterationRecordSerializer;
 import org.apache.flink.runtime.memory.MemoryAllocationException;
 import org.apache.flink.table.runtime.util.MemorySegmentPool;
 import org.apache.flink.util.Preconditions;
@@ -95,6 +96,10 @@ public class DataCacheWriter<T> {
         this.segmentPool = segmentPool;
         this.serializer = serializer;
         this.finishedSegments = new ArrayList<>(priorFinishedSegments);
+        if(serializer instanceof IterationRecordSerializer) {
+            System.out.println("err ebd. **************************************");
+        }
+        System.out.println(serializer + " *");
         this.currentSegmentWriter = createSegmentWriter();
     }
 
@@ -156,7 +161,6 @@ public class DataCacheWriter<T> {
             if (segment.getFsSize() > 0) {
                 continue;
             }
-
             SegmentReader<T> reader = new MemorySegmentReader<>(serializer, segment, 0);
             SegmentWriter<T> writer = new FileSegmentWriter<>(serializer, segment.getPath());
             while (reader.hasNext()) {
