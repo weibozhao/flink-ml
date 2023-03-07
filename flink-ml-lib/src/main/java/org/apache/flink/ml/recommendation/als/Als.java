@@ -18,7 +18,6 @@
 
 package org.apache.flink.ml.recommendation.als;
 
-import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.MapPartitionFunction;
 import org.apache.flink.api.common.functions.ReduceFunction;
@@ -27,6 +26,7 @@ import org.apache.flink.api.common.functions.RichFilterFunction;
 import org.apache.flink.api.common.functions.RichFlatMapFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.functions.RichMapPartitionFunction;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
@@ -39,6 +39,7 @@ import org.apache.flink.iteration.IterationBody;
 import org.apache.flink.iteration.IterationBodyResult;
 import org.apache.flink.iteration.IterationConfig;
 import org.apache.flink.iteration.IterationConfig.OperatorLifeCycle;
+import org.apache.flink.iteration.IterationListener;
 import org.apache.flink.iteration.Iterations;
 import org.apache.flink.iteration.ReplayableDataStreamList;
 import org.apache.flink.ml.api.Estimator;
@@ -53,13 +54,18 @@ import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
+import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
+import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
+import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
+import org.apache.flink.util.OutputTag;
 import org.apache.flink.util.Preconditions;
 
 import com.ibm.icu.impl.Pair;
@@ -104,22 +110,22 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                 trainData.map(
                         (MapFunction<Row, Tuple3<Long, Long, Float>>)
                                 value -> {
-                                    Long user = value.getFieldAs(userCol);
-                                    Long item = value.getFieldAs(itemCol);
-                                    Object rating =
-                                            ratingCol == null ? 0.0 : value.getField(ratingCol);
+                                    Number user = value.getFieldAs(userCol);
+                                    Number item = value.getFieldAs(itemCol);
+                                    Number rating =
+                                            ratingCol == null ? 0.0f : value.getFieldAs(ratingCol);
 
-                                    assert rating != null;
                                     return new Tuple3<>(
-                                            ((Number) user).longValue(),
-                                            ((Number) item).longValue(),
-                                            ((Number) rating).floatValue());
+                                            user.longValue(),
+                                            item.longValue(),
+                                            rating.floatValue());
                                 }).returns(Types.TUPLE(Types.LONG, Types.LONG, Types.FLOAT));
 
         DataStream<Ratings> graphData = initGraph(alsInput);
         DataStream<Factors> userItemFactors = initFactors(graphData, getRank(), getSeed());
 
-        DataStream<DataProfile> dataProfile = generateDataProfile(graphData,getRank(), getNumItemBlocks());
+        SingleOutputStreamOperator dataProfile = generateDataProfile(graphData,getRank(), getNumItemBlocks());
+
         DataStreamList result =
             Iterations.iterateBoundedStreamsUntilTermination(
                 DataStreamList.of(userItemFactors),
@@ -133,18 +139,20 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         DataStream<AlsModelData> modelData =
                 DataStreamUtils.mapPartition(
                     result.get(0),
-                    new MapPartitionFunction <Factors, AlsModelData>() {
+                    new MapPartitionFunction <List<Factors>, AlsModelData>() {
                         @Override
-                        public void mapPartition(Iterable <Factors> iterable, Collector <AlsModelData> collector) {
+                        public void mapPartition(Iterable <List<Factors>> iterable, Collector <AlsModelData> collector) {
                             List<Tuple2<Long, float[]>> userFactors = new ArrayList<>();
                             List<Tuple2<Long, float[]>> itemFactors = new ArrayList<>();
-                            for (Factors factors : iterable) {
-                                if (factors.identity == 0) {
-                                    userFactors.add(
-                                        Tuple2.of(factors.nodeId, factors.factors));
-                                } else {
-                                    itemFactors.add(
-                                        Tuple2.of(factors.nodeId, factors.factors));
+                            for (List<Factors> factorsArray : iterable) {
+                                for (Factors factors : factorsArray) {
+                                    if (factors.identity == 0) {
+                                        userFactors.add(
+                                            Tuple2.of(factors.nodeId, factors.factors));
+                                    } else {
+                                        itemFactors.add(
+                                            Tuple2.of(factors.nodeId, factors.factors));
+                                    }
                                 }
                             }
                             collector.collect(new AlsModelData(userFactors, itemFactors));
@@ -175,31 +183,45 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         @Override
         public IterationBodyResult process(
                 DataStreamList variableStreams, DataStreamList dataStreams) {
+            final OutputTag <List<Factors>> modelDataOutputTag =
+                new OutputTag<List<Factors>>("MODEL_OUTPUT") {};
+
+            DataStream<Factors> userAndItemFactors = variableStreams.get(0);
+
+            SingleOutputStreamOperator<Integer> iterationController =
+                userAndItemFactors
+                    .transform(
+                        "iterationController",
+                        Types.INT,
+                        new IterationControllerFunc(modelDataOutputTag));
+
             DataStreamList feedbackVariableStream =
                     IterationBody.forEachRound(
                             dataStreams,
                             input -> {
-                                DataStream<Factors> userItemFactors = variableStreams.get(0);
                                 DataStream<Ratings> graphData = dataStreams.get(0);
                                 DataStream<DataProfile> dataProfile = dataStreams.get(1);
-                                Tuple2<DataStream<Factors>, DataStream<Integer>>
-                                        factorsAndStopCriterion =
+                                DataStream<Factors>
+                                        factors =
                                                 updateFactors(
-                                                        userItemFactors,
+                                                        userAndItemFactors,
                                                         graphData,
                                                         dataProfile,
                                                         numMiniBatches,
                                                         numFactors,
                                                         nonnegative,
-                                                        numIters);
-                                return DataStreamList.of(factorsAndStopCriterion.f0);
+                                                        iterationController);
+                                return DataStreamList.of(factors);
                             });
 
-            DataStream<Integer> terminationCriteria =
-                    feedbackVariableStream.get(0).flatMap(new TerminateOnMaxIter(numIters));
+            SingleOutputStreamOperator terminationCriteria =
+                    iterationController.flatMap(new TerminateOnMaxIter(numIters));
 
             return new IterationBodyResult(
-                    feedbackVariableStream, variableStreams, terminationCriteria);
+                    feedbackVariableStream,
+                DataStreamList.of(
+                    iterationController.getSideOutput(modelDataOutputTag)),
+                terminationCriteria);
         }
     }
 
@@ -236,7 +258,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
     private DataStream<Ratings> initGraph(DataStream<Tuple3<Long, Long, Float>> alsInput) {
 
         return alsInput.flatMap(
-                        new FlatMapFunction<
+                        new RichFlatMapFunction<
                                 Tuple3<Long, Long, Float>, Tuple4<Long, Long, Float, Byte>>() {
 
                             @Override
@@ -249,8 +271,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                         })
                 .keyBy(new KeySelector <Tuple4<Long, Long, Float, Byte>, Pair<Byte, Long>>() {
                            @Override
-                           public Pair <Byte, Long> getKey(Tuple4 <Long, Long, Float, Byte> value)
-                               throws Exception {
+                           public Pair <Byte, Long> getKey(Tuple4 <Long, Long, Float, Byte> value) {
                                return Pair.of(value.f3, value.f0);
                            }
                        })
@@ -267,7 +288,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                     Pair<Byte, Long> o,
                                     Context context,
                                     Iterable<Tuple4<Long, Long, Float, Byte>> iterable,
-                                    Collector<Ratings> collector) {
+                                    Collector<Ratings> collector) throws InterruptedException {
                                 byte identity = -1;
                                 long srcNodeId = -1L;
                                 List<Long> neighbors = new ArrayList<>();
@@ -290,11 +311,36 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                     r.neighbors[i] = neighbors.get(i);
                                     r.ratings[i] = ratings.get(i);
                                 }
-
                                 collector.collect(r);
                             }
                         }).returns(GenericTypeInfo.of(Ratings.class))
                 .name("init_graph");
+    }
+
+    private static class IterationControllerFunc extends AbstractStreamOperator <Integer>
+        implements OneInputStreamOperator <Factors, Integer>,
+        IterationListener <Integer> {
+        private final OutputTag <List<Factors>> modelDataOutputTag;
+        private final List<Factors> factors = new ArrayList <>();
+        public IterationControllerFunc(OutputTag <List<Factors>> modelDataOutputTag) {
+            this.modelDataOutputTag = modelDataOutputTag;
+        }
+
+        @Override
+        public void onEpochWatermarkIncremented(int epochWatermark, Context context, Collector <Integer> collector) {
+            collector.collect(epochWatermark);
+            System.out.println("epochWatermark : " + epochWatermark);
+        }
+
+        @Override
+        public void onIterationTerminated(Context context, Collector <Integer> collector) {
+            context.output(modelDataOutputTag, factors);
+        }
+
+        @Override
+        public void processElement(StreamRecord <Factors> streamRecord) throws Exception {
+            factors.add(streamRecord.getValue());
+        }
     }
 
     /**
@@ -308,27 +354,17 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
      * @param nonnegative Whether to enforce non-negativity constraint.
      * @return Tuple2 of all factors and stop criterion.
      */
-    private static Tuple2<DataStream<Factors>, DataStream<Integer>> updateFactors(
+    private static DataStream<Factors> updateFactors(
             DataStream<Factors> userAndItemFactors,
             DataStream<Ratings> graphData,
             DataStream<DataProfile> profile,
             final int minBlocks,
             final int numFactors,
             final boolean nonnegative,
-            final int numIters) {
-
-        // Just to inherit the iteration env
-        DataStream<Factors> empty =
-                userAndItemFactors.flatMap(
-                        new FlatMapFunction<Factors, Factors>() {
-
-                            @Override
-                            public void flatMap(Factors factors, Collector<Factors> collector) {
-                            }
-                        });
+            SingleOutputStreamOperator<Integer> stepController) {
 
         Map<String, DataStream<?>> broadcastMap = new HashMap<>();
-        broadcastMap.put("empty", empty);
+        broadcastMap.put("stepController", stepController);
         broadcastMap.put("profile", profile);
 
         // Get the mini-batch
@@ -337,10 +373,10 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                 Collections.singletonList(graphData),
                                 broadcastMap,
                                 inputList -> {
-                                    DataStream<Ratings> data1 =
+                                    DataStream<Ratings> allData =
                                             (DataStream<Ratings>) inputList.get(0);
 
-                                    return data1.filter(
+                                    return allData.filter(
                                             new RichFilterFunction<Ratings>() {
                                                 private transient DataProfile profile;
                                                 private transient int alsStepNo;
@@ -348,8 +384,10 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                                 private transient int subStepNo;
                                                 private transient int numSubsteps;
 
+                                                private int cnt = 0;
                                                 @Override
                                                 public void open(Configuration parameters) {
+                                                    System.out.println(getRuntimeContext().getIndexOfThisSubtask() +  " generate mini batches.");
                                                     if (profile != null) {
                                                         subStepNo++;
                                                         if (userOrItem == 0) { // user step
@@ -376,7 +414,14 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                                 }
 
                                                 @Override
+                                                public void close() throws Exception {
+                                                    super.close();
+                                                    System.out.println(getRuntimeContext().getIndexOfThisSubtask() +  " generate mini batches end. "  + cnt);
+                                                }
+
+                                                @Override
                                                 public boolean filter(Ratings value) {
+                                                    cnt ++;
                                                     if (profile == null) {
                                                         profile =
                                                             (DataProfile)
@@ -394,15 +439,23 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                                             profile.numItems,
                                                             profile.parallelism);
                                                         subStepNo = -1;
-                                                        userOrItem = 0;
+                                                        if (userOrItem == 1) {
+                                                            userOrItem = 0;
+                                                        } else
                                                         alsStepNo = 0;
                                                         numSubsteps = profile.numUserBatches;
                                                     }
-
-                                                    return alsStepNo < numIters
-                                                            && value.nodeId == userOrItem
-                                                            && Math.abs(value.identity) % numSubsteps
-                                                                    == subStepNo;
+                                                    List<Object> objs = getRuntimeContext().getBroadcastVariable("stepController");
+                                                    //return true; // TODO : generate miniBatch for iteration
+                                                    if (objs.size() == 0) { // todo : check stop condition of iteration.
+                                                        return false;
+                                                    } else {
+                                                        return true;
+                                                    }
+                                                    //return alsStepNo < numIters
+                                                    //        && value.nodeId == userOrItem
+                                                    //        && Math.abs(value.identity) % numSubsteps
+                                                    //                == subStepNo;
                                                 }
                                             });
                                 })
@@ -412,8 +465,15 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
 
                                     @Override
                                     public void open(Configuration parameters) {
+                                        System.out.println(getRuntimeContext().getIndexOfThisSubtask() +  " Ratings map function...");
                                         this.partitionId =
                                                 getRuntimeContext().getIndexOfThisSubtask();
+                                    }
+
+                                    @Override
+                                    public void close() throws Exception {
+                                        super.close();
+                                        System.out.println(getRuntimeContext().getIndexOfThisSubtask() +  " Ratings map function end.");
                                     }
 
                                     @Override
@@ -427,8 +487,19 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         DataStream<Tuple3<Integer, Byte, Long>> request =
                 miniBatch // Tuple: partitionId, ratings
                         .flatMap(
-                                new FlatMapFunction<
+                                new RichFlatMapFunction<
                                         Tuple2<Integer, Ratings>, Tuple3<Integer, Byte, Long>>() {
+                                    @Override
+                                    public void open(Configuration parameters) throws Exception {
+                                        System.out.println(getRuntimeContext().getIndexOfThisSubtask() +  " generate request...");
+                                        super.open(parameters);
+                                    }
+
+                                    @Override
+                                    public void close() throws Exception {
+                                        super.close();
+                                        System.out.println(getRuntimeContext().getIndexOfThisSubtask() +  " generate request end.");
+                                    }
 
                                     @Override
                                     public void flatMap(
@@ -482,15 +553,16 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
 
                                     @Override
                                     public void open(Configuration parameters) {
+                                        System.out.println(getRuntimeContext().getIndexOfThisSubtask() +  " generate response...");
                                         int numTasks =
                                                 getRuntimeContext().getNumberOfParallelSubtasks();
                                         flag = new int[numTasks];
-                                        System.out.println("open response cogroup");
                                         partitionsIds = new int[numTasks];
                                     }
 
                                     @Override
                                     public void close() {
+                                        System.out.println(getRuntimeContext().getIndexOfThisSubtask() +  " generate response end.");
                                         flag = null;
                                         partitionsIds = null;
                                     }
@@ -550,11 +622,14 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         if (implicitprefs) {
             DataStream<double[]> yty = computeYtY(userAndItemFactors, numFactors, minBlocks);
 
+            Map<String, DataStream<?>> ytyBroad = new HashMap<>();
+            ytyBroad.put("stepController", stepController);
+            ytyBroad.put("YtY", yty);
             // Tuple: Identity, nodeId, factors
             updatedBatchFactors =
                     BroadcastUtils.withBroadcastStream(
                             Arrays.asList(miniBatch, response),
-                            Collections.singletonMap("YtY", yty),
+                            ytyBroad,
                             inputList -> {
                                 DataStream<Tuple2<Integer, Ratings>> data1 =
                                         (DataStream<Tuple2<Integer, Ratings>>) inputList.get(0);
@@ -589,8 +664,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                             nonnegative)); // .name("CalculateNewFactorsExplicit");
         }
 
-        DataStream<Factors> factors =
-                userAndItemFactors
+        return userAndItemFactors
                         .coGroup(updatedBatchFactors)
                         .where(new KeySelector <Factors, Tuple2<Byte, Long>>() {
                                     @Override
@@ -633,32 +707,29 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                     }
                                 }); // .name("UpdateFactors");
 
-        DataStream<Integer> stopCriterion =
-                BroadcastUtils.withBroadcastStream(
-                        Collections.singletonList(profile),
-                        Collections.singletonMap("empty", empty),
-                        inputList -> {
-                            DataStream<DataProfile> initPro =
-                                    (DataStream<DataProfile>) inputList.get(0);
-                            return initPro.flatMap(
-                                    new RichFlatMapFunction<DataProfile, Integer>() {
-
-                                        @Override
-                                        public void flatMap(
-                                                DataProfile pf, Collector<Integer> out) {
-                                            int stepNo =
-                                                    getIterationRuntimeContext()
-                                                            .getSuperstepNumber();
-                                            if (stepNo
-                                                    < (pf.numUserBatches + pf.numItemBatches)
-                                                            * numIters) {
-                                                out.collect(0);
-                                            }
-                                        }
-                                    });
-                        });
-
-        return Tuple2.of(factors, stopCriterion);
+        //DataStream<Integer> stopCriterion =
+        //        BroadcastUtils.withBroadcastStream(
+        //                Collections.singletonList(profile),
+        //                Collections.singletonMap("stepController", stepController),
+        //                inputList -> {
+        //                    DataStream<DataProfile> initPro =
+        //                            (DataStream<DataProfile>) inputList.get(0);
+        //                    return initPro.flatMap(
+        //                            new RichFlatMapFunction<DataProfile, Integer>() {
+        //
+        //                                @Override
+        //                                public void flatMap(
+        //                                        DataProfile pf, Collector<Integer> out) {
+        //                                    int stepController =
+        //                                        (int)getRuntimeContext().getBroadcastVariable("stepController").get(0);
+        //                                    if (stepController < 2) {
+        //                                            //< (pf.numUserBatches + pf.numItemBatches)
+        //                                            //        * numIters) {
+        //                                        out.collect(0);
+        //                                    }
+        //                                }
+        //                            });
+        //                });
     }
 
     @Override
@@ -707,13 +778,19 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         }
     }
 
-    private static DataStream<DataProfile> generateDataProfile(
+    private static SingleOutputStreamOperator generateDataProfile(
             DataStream<Ratings> graphData, final int numFactors, final int minBlocks) {
 
         DataStream<Tuple3<Long, Long, Long>> middleData =
                 DataStreamUtils.mapPartition(
                         graphData,
-                        new MapPartitionFunction<Ratings, Tuple3<Long, Long, Long>>() {
+                        new RichMapPartitionFunction<Ratings, Tuple3<Long, Long, Long>>() {
+                            @Override
+                            public void open(Configuration parameters) throws Exception {
+                                super.open(parameters);
+                                System.out.println("generate Data profile.");
+                            }
+
                             @Override
                             public void mapPartition(
                                     Iterable<Ratings> values,
@@ -728,7 +805,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                     } else {
                                         numItems++;
                                     }
-                                    System.out.println("graph data to middle data.");
+                                   // System.out.println("graph data to middle data.");
                                 }
                                 out.collect(Tuple3.of(numUsers, numItems, numRatings));
                             }
@@ -754,7 +831,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                             @Override
                             public DataProfile map(Tuple3<Long, Long, Long> value) {
                                 int parallelism =
-                                        getRuntimeContext().getMaxNumberOfParallelSubtasks();
+                                        getRuntimeContext().getNumberOfParallelSubtasks();
                                 DataProfile profile = new DataProfile();
                                 profile.parallelism = parallelism;
                                 profile.numUsers = value.f0;
@@ -764,7 +841,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                 profile.decideNumMiniBatches(numFactors, parallelism, minBlocks);
                                 return profile;
                             }
-                        }).returns(new GenericTypeInfo(DataProfile.class))
+                        }).returns(TypeInformation.of(DataProfile.class))
                 .name("data_profiling");
     }
 
@@ -784,7 +861,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         private int numNodes = 0;
         private long numEdges = 0L;
         private long numNeighbors = 0L;
-
+        private boolean firstStep = true;
         private transient double[] yty = null;
 
         UpdateFactorsFunc(boolean explicit, int numFactors, double lambda, boolean nonnegative) {
@@ -813,13 +890,12 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
             numNodes = 0;
             numEdges = 0;
             numNeighbors = 0L;
-            if (!explicit) {
-                this.yty = (double[]) (getRuntimeContext().getBroadcastVariable("YtY").get(0));
-            }
+            System.out.println("update factors : " + numNeighbors);
         }
 
         @Override
         public void close() {
+            System.out.println("neighbors end.");
             LOG.info(
                     "Updated factors, num nodes {}, num edges {}, recv neighbors {}",
                     numNodes,
@@ -832,10 +908,16 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                 Iterable<Tuple2<Integer, Ratings>> rows,
                 Iterable<Tuple2<Integer, Factors>> factors,
                 Collector<Factors> out) {
+            if (firstStep) {
+                if (!explicit) {
+                    this.yty = (double[]) (getRuntimeContext().getBroadcastVariable("YtY").get(0));
+                }
+                firstStep = false;
+            }
             assert (rows != null && factors != null);
             List<Tuple2<Integer, Factors>> cachedFactors = new ArrayList<>();
             Map<Long, Integer> index2pos = new HashMap<>();
-
+            numNeighbors = 0;
             // loop over received factors
             for (Tuple2<Integer, Factors> factor : factors) {
                 cachedFactors.add(factor);
@@ -846,7 +928,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
             NormalEquationSolver ls = new NormalEquationSolver(numFactors);
             DenseVector x = new DenseVector(numFactors); // the solution buffer
             DenseVector buffer = new DenseVector(numFactors); // buffers for factors
-
+            System.out.println("cogroup update factors");
             // loop over local nodes
             for (Tuple2<Integer, Ratings> row : rows) {
                 numNodes++;
@@ -881,7 +963,11 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                             numExplicit++;
                             c1 = alpha * r;
                         }
+                        if (pos == null) {
+                            System.out.println(cachedFactors + " " + pos + " " + index);
+                        }
                         cachedFactors.get(pos).f1.getFactorsAsDoubleArray(buffer.values);
+                        //System.out.println("OK");
                         ls.add(buffer, ((r > 0.0) ? (1.0 + c1) : 0.0), c1);
                     }
                     numExplicit = Math.max(numExplicit, 1);
@@ -909,9 +995,9 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                             @Override
                             public void mapPartition(
                                     Iterable<Factors> values, Collector<double[]> out) {
-                              //  int stepNo = getIterationRuntimeContext().getSuperstepNumber() - 1;
-                               int stepNo = 1;
-                                int identity = (stepNo / numMiniBatch) % 2; // updating 'Identity'
+                                //  int stepController = getIterationRuntimeContext().getSuperstepNumber() - 1;
+                                int stepController = 1;
+                                int identity = (stepController / numMiniBatch) % 2; // updating 'Identity'
                                 int dst = 1 - identity;
 
                                 double[] blockYtY = new double[numFactors * numFactors];

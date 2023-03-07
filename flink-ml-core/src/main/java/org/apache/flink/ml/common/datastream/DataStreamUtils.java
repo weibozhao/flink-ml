@@ -40,6 +40,7 @@ import org.apache.flink.core.memory.ManagedMemoryUseCase;
 import org.apache.flink.iteration.datacache.nonkeyed.ListStateWithCache;
 import org.apache.flink.iteration.operator.OperatorStateUtils;
 import org.apache.flink.ml.common.datastream.sort.CoGroupOperator;
+import org.apache.flink.iteration.typeinfo.IterationRecordSerializer;
 import org.apache.flink.ml.common.window.CountTumblingWindows;
 import org.apache.flink.ml.common.window.EventTimeSessionWindows;
 import org.apache.flink.ml.common.window.EventTimeTumblingWindows;
@@ -478,15 +479,17 @@ public class DataStreamUtils {
         @Override
         public void initializeState(StateInitializationContext context) throws Exception {
             super.initializeState(context);
-            System.out.println(getOperatorConfig().getTypeSerializerIn(0, getClass().getClassLoader()));
-            System.out.println(getOperatorConfig() + " config *********************************************************************************** ");
+            TypeSerializer typeSerializer = getOperatorConfig().getTypeSerializerIn(0, getClass().getClassLoader());
+            if (typeSerializer instanceof IterationRecordSerializer) {
+                typeSerializer = ((IterationRecordSerializer) typeSerializer).getInnerSerializer();
+            }
             valuesState =
-                    new ListStateWithCache<>(
-                            getOperatorConfig().getTypeSerializerIn(0, getClass().getClassLoader()),
-                            getContainingTask(),
-                            getRuntimeContext(),
-                            context,
-                            config.getOperatorID());
+                new ListStateWithCache<>(
+                    typeSerializer,
+                    getContainingTask(),
+                    getRuntimeContext(),
+                    context,
+                    config.getOperatorID());
         }
 
         @Override

@@ -6,9 +6,9 @@ import java.util.Arrays;
 
 /** A normal equation is A^T * A * x = A^T * b, where A * x = b is a lease square problem. */
 public class NormalEquationSolver {
-    private static final dev.ludovic.netlib.NativeBLAS NATIVE_BLAS =
-            dev.ludovic.netlib.NativeBLAS.getInstance();
-    private static final dev.ludovic.netlib.LAPACK LAPACK =
+    private static final dev.ludovic.netlib.BLAS NATIVE_BLAS =
+        dev.ludovic.netlib.JavaBLAS.getInstance();
+    public static final dev.ludovic.netlib.LAPACK LAPACK =
             dev.ludovic.netlib.lapack.F2jLAPACK.getInstance();
     /** Rank of the equation. */
     private final int n;
@@ -85,7 +85,7 @@ public class NormalEquationSolver {
             System.arraycopy(ret, 0, x.values, 0, n);
         } else {
             int n = ata.numCols();
-            int nrhs = atb.size();
+            int nrhs = 1;
             intW info = new intW(0);
             // require(A.isSymmetric, "A is not symmetric")
             LAPACK.dposv("U", n, nrhs, ata.values, n, atb.values, n, info);
