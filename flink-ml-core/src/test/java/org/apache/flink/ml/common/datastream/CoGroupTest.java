@@ -72,7 +72,7 @@ public class CoGroupTest {
         env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         env.getConfig().enableObjectReuse();
         env.setRestartStrategy(RestartStrategies.noRestart());
-        env.setParallelism(1);
+        env.setParallelism(4);
         env.enableCheckpointing(100);
         env.setRestartStrategy(RestartStrategies.noRestart());
     }
@@ -654,6 +654,12 @@ public class CoGroupTest {
         System.out.println(counts.size());
     }
 
+    @Test
+    public void test100() throws Exception {
+       for (int i = 0; i < 100; ++i) {
+           testCoGroupWithIterationAndBroadcastLong();
+       }
+    }
     @Test
     public void testIterationWithBroadcast() throws Exception {
         DataStream<Long> broadcast =

@@ -112,9 +112,6 @@ public class ReplayOperator<T> extends AbstractStreamOperator<IterationRecord<T>
                             config.getTypeSerializerOut(getClass().getClassLoader());
             typeSerializer = iterationRecordSerializer.getInnerSerializer();
 
-            if (typeSerializer instanceof IterationRecordSerializer) {
-                System.out.println("typeSerializer err. IterationRecordSerializer");
-            }
             mailboxExecutor =
                     containingTask
                             .getMailboxExecutorFactory()
@@ -295,6 +292,7 @@ public class ReplayOperator<T> extends AbstractStreamOperator<IterationRecord<T>
             T next = dataCacheReader.next();
             reusable.getValue().setValue(next);
             output.collect(reusable);
+            System.out.println("replayed operator-" + getRuntimeContext().getIndexOfThisSubtask() + " sends " + next + " at epoch " + epoch);
         }
 
         currentDataCacheReader = null;

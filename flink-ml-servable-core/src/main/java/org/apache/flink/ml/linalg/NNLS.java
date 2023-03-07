@@ -7,8 +7,8 @@ import java.util.Arrays;
  * method.
  */
 public class NNLS {
-    private static final dev.ludovic.netlib.NativeBLAS NATIVE_BLAS =
-            dev.ludovic.netlib.NativeBLAS.getInstance();
+    private static final dev.ludovic.netlib.BLAS NATIVE_BLAS =
+        dev.ludovic.netlib.JavaBLAS.getInstance();
 
     private double[] scratch;
     private double[] grad;

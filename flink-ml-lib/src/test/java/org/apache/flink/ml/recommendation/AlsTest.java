@@ -81,7 +81,7 @@ public class AlsTest extends AbstractTestBase {
         config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
         env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         env.getConfig().enableObjectReuse();
-        env.setParallelism(1);
+        env.setParallelism(2);
         env.enableCheckpointing(100);
         env.setRestartStrategy(RestartStrategies.noRestart());
         tEnv = StreamTableEnvironment.create(env);
@@ -172,6 +172,9 @@ public class AlsTest extends AbstractTestBase {
     	Als als = new Als().setUserCol("user_id")
             .setItemCol("item_id")
             .setRatingCol("rating")
+            .setNumUserBlocks(1)
+            .setMaxIter(2)
+            .setNumItemBlocks(1)
             .setPredictionCol("pred");
     	Table output = als.fit(trainDataTable).transform(trainDataTable)[0];
     	verifyPredictionResult(
@@ -233,4 +236,11 @@ public class AlsTest extends AbstractTestBase {
     //	verifyPredictionResult(
     //		output, als.getLabelCol(), als.getPredictionCol());
     // }
+
+    @Test
+    public void test100() throws Exception{
+        for (int i = 0; i < 100; i ++) {
+            testFitAndPredict();
+        }
+    }
 }
