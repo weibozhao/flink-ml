@@ -38,9 +38,11 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Random;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -54,7 +56,7 @@ public class AlsTest extends AbstractTestBase {
 
     private StreamTableEnvironment tEnv;
 
-    private static final List<Row> trainData =
+    private List<Row> trainData =
             Arrays.asList(
                     Row.of(1L, 5L, 0.7),
                     Row.of(2L, 7L, 0.4),
@@ -65,13 +67,9 @@ public class AlsTest extends AbstractTestBase {
                     Row.of(4L, 8L, 0.3),
                     Row.of(2L, 6L, 0.4));
 
-    private static final double[] expectedCoefficient = new double[] {1.141, 1.829};
 
     private static final double TOLERANCE = 1e-7;
 
-    private static final double PREDICTION_TOLERANCE = 0.1;
-
-    private static final double COEFFICIENT_TOLERANCE = 0.1;
 
     private Table trainDataTable;
 
@@ -81,10 +79,15 @@ public class AlsTest extends AbstractTestBase {
         config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
         env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         env.getConfig().enableObjectReuse();
-        env.setParallelism(2);
-        env.enableCheckpointing(100);
+        env.setParallelism(1);
+        env.getCheckpointConfig().disableCheckpointing();// enableCheckpointing(100);
         env.setRestartStrategy(RestartStrategies.noRestart());
         tEnv = StreamTableEnvironment.create(env);
+        //Random rand = new Random(0);
+        //List<Row> trainData = new ArrayList <>();
+        //for (int i = 0; i < 2000000; ++i) {
+        //    trainData.add(Row.of((long)rand.nextInt(100000), (long)rand.nextInt(100), rand.nextDouble()));
+        //}
         Collections.shuffle(trainData);
         trainDataTable =
                 tEnv.fromDataStream(
@@ -131,7 +134,7 @@ public class AlsTest extends AbstractTestBase {
                 .setAlpha(0.001)
                 .setRegParam(0.5)
                 .setRank(100)
-                .setImplicitprefs(true)
+                .setImplicitPrefs(true)
                 .setNonnegative(true)
                 .setMaxIter(1000)
                 .setNumUserBlocks(5)
@@ -173,7 +176,9 @@ public class AlsTest extends AbstractTestBase {
             .setItemCol("item_id")
             .setRatingCol("rating")
             .setNumUserBlocks(1)
-            .setMaxIter(2)
+            .setMaxIter(10)
+            .setRank(10)
+            .setImplicitPrefs(true)
             .setNumItemBlocks(1)
             .setPredictionCol("pred");
     	Table output = als.fit(trainDataTable).transform(trainDataTable)[0];

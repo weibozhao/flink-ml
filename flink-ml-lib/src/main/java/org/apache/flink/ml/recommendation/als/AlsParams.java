@@ -98,7 +98,7 @@ public interface AlsParams<T> extends HasSeed<T>, AlsModelParams<T> {
         return get(IMPLICITPREFS);
     }
 
-    default T setImplicitprefs(Boolean value) {
+    default T setImplicitPrefs(Boolean value) {
         return set(IMPLICITPREFS, value);
     }
 

@@ -144,13 +144,11 @@ public abstract class AbstractWrapperOperator<T>
     }
 
     protected void setIterationContextRound(Integer contextRound) {
-        //System.out.println(contextRound + "  set context round.");
         proxyOutput.setContextRound(contextRound);
         epochWatermarkSupplier.set(contextRound);
     }
 
     protected void clearIterationContextRound() {
-        //System.out.println(proxyOutput.contextRound + "  clear context round.");
         proxyOutput.setContextRound(null);
         epochWatermarkSupplier.set(null);
     }

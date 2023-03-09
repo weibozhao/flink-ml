@@ -354,9 +354,7 @@ public abstract class AbstractBroadcastWrapperOperator<T, S extends StreamOperat
                 switch (cacheElement.getType()) {
                     case RECORD:
                         StreamRecord record = new StreamRecord(cacheElement.getRecord());
-
                         keyContextSetter.accept(record);
-                        System.out.println("task : " + this.indexOfSubtask + " " +  cacheElement.getWatermark() + " " + cacheElement.getRecord().getClass());
                         elementConsumer.accept(record);
                         break;
                     case WATERMARK:
