@@ -40,7 +40,7 @@ public class ProxyOutput<T> implements Output<StreamRecord<T>> {
 
     private final Map<String, SideOutputCache> sideOutputCaches = new HashMap<>();
 
-    public Integer contextRound;
+    private Integer contextRound;
 
     public ProxyOutput(Output<StreamRecord<IterationRecord<T>>> output) {
         this.output = Objects.requireNonNull(output);

@@ -38,14 +38,10 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
-import java.util.Random;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
 
 /** Tests {@link Als} and {@link AlsModel}. */
 public class AlsTest extends AbstractTestBase {
@@ -67,9 +63,7 @@ public class AlsTest extends AbstractTestBase {
                     Row.of(4L, 8L, 0.3),
                     Row.of(2L, 6L, 0.4));
 
-
     private static final double TOLERANCE = 1e-7;
-
 
     private Table trainDataTable;
 
@@ -80,15 +74,17 @@ public class AlsTest extends AbstractTestBase {
         env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         env.getConfig().enableObjectReuse();
         env.setParallelism(1);
-        env.getCheckpointConfig().disableCheckpointing();// enableCheckpointing(100);
+        env.getCheckpointConfig().disableCheckpointing(); // enableCheckpointing(100);
         env.setRestartStrategy(RestartStrategies.noRestart());
         tEnv = StreamTableEnvironment.create(env);
-        //Random rand = new Random(0);
-        //List<Row> trainData = new ArrayList <>();
-        //for (int i = 0; i < 2000000; ++i) {
-        //    trainData.add(Row.of((long)rand.nextInt(100000), (long)rand.nextInt(100), rand.nextDouble()));
-        //}
-        Collections.shuffle(trainData);
+        // Random rand = new Random(0);
+        // List<Row> trainData = new ArrayList<>();
+        // for (int i = 0; i < 2000000; ++i) {
+        //    trainData.add(
+        //            Row.of((long) rand.nextInt(200), (long) rand.nextInt(200),
+        // rand.nextDouble()));
+        // }
+        // Collections.shuffle(trainData);
         trainDataTable =
                 tEnv.fromDataStream(
                         env.fromCollection(
@@ -108,7 +104,7 @@ public class AlsTest extends AbstractTestBase {
             double label = ((Number) predictionRow.getField(ratingCol)).doubleValue();
             double prediction = (double) predictionRow.getField(predictionCol);
             System.out.println(label + " " + prediction);
-            //assertTrue(Math.abs(prediction - label) / label < PREDICTION_TOLERANCE);
+            // assertTrue(Math.abs(prediction - label) / label < PREDICTION_TOLERANCE);
         }
     }
 
@@ -134,7 +130,7 @@ public class AlsTest extends AbstractTestBase {
                 .setAlpha(0.001)
                 .setRegParam(0.5)
                 .setRank(100)
-                .setImplicitPrefs(true)
+                .setImplicitPrefs(false)
                 .setNonnegative(true)
                 .setMaxIter(1000)
                 .setNumUserBlocks(5)
@@ -155,49 +151,53 @@ public class AlsTest extends AbstractTestBase {
         assertEquals("pred", als.getPredictionCol());
     }
 
-     @Test
-     public void testOutputSchema() {
-         Table tempTable = trainDataTable.as("user_id", "item_id", "rating_col");
-         Als als =
-             new Als().setUserCol("user_id")
-                 .setItemCol("item_id")
-                 .setRatingCol("rating_col")
-                 .setPredictionCol("pred");
-         AlsModel model = als.fit(trainDataTable);
-         Table output = model.transform(tempTable)[0];
-         assertEquals(
-             Arrays.asList("user_id", "item_id", "rating_col", "pred"),
-             output.getResolvedSchema().getColumnNames());
-     }
+    @Test
+    public void testOutputSchema() {
+        Table tempTable = trainDataTable.as("user_id", "item_id", "rating_col");
+        Als als =
+                new Als()
+                        .setUserCol("user_id")
+                        .setItemCol("item_id")
+                        .setRatingCol("rating_col")
+                        .setPredictionCol("pred");
+        AlsModel model = als.fit(trainDataTable);
+        Table output = model.transform(tempTable)[0];
+        assertEquals(
+                Arrays.asList("user_id", "item_id", "rating_col", "pred"),
+                output.getResolvedSchema().getColumnNames());
+    }
 
-     @Test
-     public void testFitAndPredict() throws Exception {
-    	Als als = new Als().setUserCol("user_id")
-            .setItemCol("item_id")
-            .setRatingCol("rating")
-            .setNumUserBlocks(1)
-            .setMaxIter(10)
-            .setRank(10)
-            .setImplicitPrefs(true)
-            .setNumItemBlocks(1)
-            .setPredictionCol("pred");
-    	Table output = als.fit(trainDataTable).transform(trainDataTable)[0];
-    	verifyPredictionResult(
-    		output, als.getRatingCol(), als.getPredictionCol());
-     }
+    @Test
+    public void testFitAndPredict() throws Exception {
+        Als als =
+                new Als()
+                        .setUserCol("user_id")
+                        .setItemCol("item_id")
+                        .setRatingCol("rating")
+                        .setNumUserBlocks(2)
+                        .setMaxIter(5)
+                        .setRank(10)
+                        .setAlpha(0.1)
+                        .setRegParam(0.1)
+                        .setImplicitPrefs(true)
+                        .setNumItemBlocks(2)
+                        .setPredictionCol("pred");
+        Table output = als.fit(trainDataTable).transform(trainDataTable.limit(100))[0];
+        verifyPredictionResult(output, als.getRatingCol(), als.getPredictionCol());
+    }
 
-     //@Test
-     //public void testInputTypeConversion() throws Exception {
-    	//trainDataTable = TestUtils.convertDataTypesToSparseInt(tEnv, trainDataTable);
-    	//assertArrayEquals(
-    	//	new Class <?>[] {SparseVector.class, Integer.class, Integer.class},
-    	//	TestUtils.getColumnDataTypes(trainDataTable));
-     //
-    	//Als als = new Als().setWeightCol("weight");
-    	//Table output = als.fit(trainDataTable).transform(trainDataTable)[0];
-    	//verifyPredictionResult(
-    	//	output, als.getLabelCol(), als.getPredictionCol());
-     //}
+    // @Test
+    // public void testInputTypeConversion() throws Exception {
+    // trainDataTable = TestUtils.convertDataTypesToSparseInt(tEnv, trainDataTable);
+    // assertArrayEquals(
+    //	new Class <?>[] {SparseVector.class, Integer.class, Integer.class},
+    //	TestUtils.getColumnDataTypes(trainDataTable));
+    //
+    // Als als = new Als().setWeightCol("weight");
+    // Table output = als.fit(trainDataTable).transform(trainDataTable)[0];
+    // verifyPredictionResult(
+    //	output, als.getLabelCol(), als.getPredictionCol());
+    // }
 
     // @Test
     // public void testSaveLoadAndPredict() throws Exception {
@@ -243,8 +243,8 @@ public class AlsTest extends AbstractTestBase {
     // }
 
     @Test
-    public void test100() throws Exception{
-        for (int i = 0; i < 100; i ++) {
+    public void test100() throws Exception {
+        for (int i = 0; i < 100; i++) {
             testFitAndPredict();
         }
     }

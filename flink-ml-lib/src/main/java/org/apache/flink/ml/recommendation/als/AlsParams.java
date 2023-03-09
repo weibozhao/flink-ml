@@ -51,7 +51,7 @@ public interface AlsParams<T> extends HasSeed<T>, AlsModelParams<T> {
                     false,
                     ParamValidators.alwaysTrue());
 
-    Param<Boolean> NONNEGATIVE =
+    Param<Boolean> NON_NEGATIVE =
             new BooleanParam(
                     "nonnegative",
                     "Whether to use nonnegative constraint for least squares.",
@@ -103,11 +103,11 @@ public interface AlsParams<T> extends HasSeed<T>, AlsModelParams<T> {
     }
 
     default Boolean getNonnegative() {
-        return get(NONNEGATIVE);
+        return get(NON_NEGATIVE);
     }
 
     default T setNonnegative(Boolean value) {
-        return set(NONNEGATIVE, value);
+        return set(NON_NEGATIVE, value);
     }
 
     default int getRank() {

@@ -7,7 +7,7 @@ import java.util.Arrays;
 /** A normal equation is A^T * A * x = A^T * b, where A * x = b is a lease square problem. */
 public class NormalEquationSolver {
     private static final dev.ludovic.netlib.BLAS NATIVE_BLAS =
-        dev.ludovic.netlib.JavaBLAS.getInstance();
+            dev.ludovic.netlib.JavaBLAS.getInstance();
     public static final dev.ludovic.netlib.LAPACK LAPACK =
             dev.ludovic.netlib.lapack.F2jLAPACK.getInstance();
     /** Rank of the equation. */

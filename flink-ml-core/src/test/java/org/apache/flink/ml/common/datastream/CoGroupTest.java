@@ -656,10 +656,11 @@ public class CoGroupTest {
 
     @Test
     public void test100() throws Exception {
-       for (int i = 0; i < 100; ++i) {
-           testCoGroupWithIterationAndBroadcastLong();
-       }
+        for (int i = 0; i < 100; ++i) {
+            testCoGroupWithIterationAndBroadcastLong();
+        }
     }
+
     @Test
     public void testIterationWithBroadcast() throws Exception {
         DataStream<Long> broadcast =
