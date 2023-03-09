@@ -44,8 +44,6 @@ import org.junit.Test;
 
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-
 /** Tests the {@link DataStreamUtils}. */
 public class MapPatitionWithIterationTest {
     private StreamExecutionEnvironment env;
@@ -66,17 +64,17 @@ public class MapPatitionWithIterationTest {
     @Test
     public void testIterationWithMapPartition() throws Exception {
         DataStream<Long> broadcast =
-            env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
+                env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
         DataStream<Long> input =
-            env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
+                env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
         DataStreamList coResult =
-            Iterations.iterateBoundedStreamsUntilTermination(
-                DataStreamList.of(input),
-                ReplayableDataStreamList.notReplay(broadcast),
-                IterationConfig.newBuilder()
-                    .setOperatorLifeCycle(OperatorLifeCycle.PER_ROUND)
-                    .build(),
-                new IterationBodyWithMapPartition());
+                Iterations.iterateBoundedStreamsUntilTermination(
+                        DataStreamList.of(input),
+                        ReplayableDataStreamList.notReplay(broadcast),
+                        IterationConfig.newBuilder()
+                                .setOperatorLifeCycle(OperatorLifeCycle.PER_ROUND)
+                                .build(),
+                        new IterationBodyWithMapPartition());
 
         List<Integer> counts = IteratorUtils.toList(coResult.get(0).executeAndCollect());
         System.out.println(counts.size());
@@ -86,27 +84,28 @@ public class MapPatitionWithIterationTest {
 
         @Override
         public IterationBodyResult process(
-            DataStreamList variableStreams, DataStreamList dataStreams) {
+                DataStreamList variableStreams, DataStreamList dataStreams) {
             DataStream<Long> dataStream1 = variableStreams.get(0);
 
             DataStream<Long> coResult =
-                DataStreamUtils.mapPartition(
-                    dataStream1,
-                    new MapPartitionFunction <Long, Long>() {
-                        @Override
-                        public void mapPartition(Iterable <Long> iterable, Collector <Long> collector)
-                            throws Exception {
-                            for (Long iter: iterable) {
-                                collector.collect(iter);
-                            }
-                        }
-                    });
+                    DataStreamUtils.mapPartition(
+                            dataStream1,
+                            new MapPartitionFunction<Long, Long>() {
+                                @Override
+                                public void mapPartition(
+                                        Iterable<Long> iterable, Collector<Long> collector)
+                                        throws Exception {
+                                    for (Long iter : iterable) {
+                                        collector.collect(iter);
+                                    }
+                                }
+                            });
 
             DataStream<Integer> terminationCriteria =
-                coResult.<Long>flatMap(new TerminateOnMaxIter(2)).returns(Types.INT);
+                    coResult.<Long>flatMap(new TerminateOnMaxIter(2)).returns(Types.INT);
 
             return new IterationBodyResult(
-                DataStreamList.of(coResult), variableStreams, terminationCriteria);
+                    DataStreamList.of(coResult), variableStreams, terminationCriteria);
         }
     }
 }

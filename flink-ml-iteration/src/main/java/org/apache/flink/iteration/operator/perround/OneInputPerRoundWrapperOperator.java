@@ -33,8 +33,6 @@ import org.apache.flink.util.FlinkRuntimeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Random;
-
 /** Per-round wrapper operator for the one-input operator. */
 public class OneInputPerRoundWrapperOperator<IN, OUT>
         extends AbstractPerRoundWrapperOperator<OUT, OneInputStreamOperator<IN, OUT>>
@@ -44,7 +42,6 @@ public class OneInputPerRoundWrapperOperator<IN, OUT>
             LoggerFactory.getLogger(OneInputPerRoundWrapperOperator.class);
 
     private final StreamRecord<IN> reusedInput;
-    private Integer lastEpochWatermark;
 
     public OneInputPerRoundWrapperOperator(
             StreamOperatorParameters<IterationRecord<OUT>> parameters,
@@ -61,14 +58,12 @@ public class OneInputPerRoundWrapperOperator<IN, OUT>
                 operator, BoundedOneInput.class, BoundedOneInput::endInput);
         operator.processWatermark(new Watermark(Long.MAX_VALUE));
     }
-    private boolean in = false;
+
     @Override
     public void processElement(StreamRecord<IterationRecord<IN>> element) throws Exception {
         switch (element.getValue().getType()) {
             case RECORD:
-                in = true;
                 reusedInput.replace(element.getValue().getValue(), element.getTimestamp());
-                lastEpochWatermark = element.getValue().getEpoch();
                 setIterationContextRound(element.getValue().getEpoch());
                 getWrappedOperator(element.getValue().getEpoch()).processElement(reusedInput);
                 clearIterationContextRound();
@@ -84,10 +79,7 @@ public class OneInputPerRoundWrapperOperator<IN, OUT>
     @Override
     public void processWatermark(Watermark mark) throws Exception {
         processForEachWrappedOperator(
-            (round, wrappedOperator) -> {
-                setIterationContextRound(lastEpochWatermark);
-                wrappedOperator.processWatermark(mark);
-            });
+                (round, wrappedOperator) -> wrappedOperator.processWatermark(mark));
     }
 
     @Override
