@@ -44,6 +44,7 @@ public class OneInputPerRoundWrapperOperator<IN, OUT>
             LoggerFactory.getLogger(OneInputPerRoundWrapperOperator.class);
 
     private final StreamRecord<IN> reusedInput;
+    private Integer lastEpochWatermark;
 
     public OneInputPerRoundWrapperOperator(
             StreamOperatorParameters<IterationRecord<OUT>> parameters,
@@ -67,7 +68,7 @@ public class OneInputPerRoundWrapperOperator<IN, OUT>
             case RECORD:
                 in = true;
                 reusedInput.replace(element.getValue().getValue(), element.getTimestamp());
-                //System.out.println(this.streamConfig  + " epoch " + element.getValue().getEpoch());
+                lastEpochWatermark = element.getValue().getEpoch();
                 setIterationContextRound(element.getValue().getEpoch());
                 getWrappedOperator(element.getValue().getEpoch()).processElement(reusedInput);
                 clearIterationContextRound();
@@ -83,7 +84,10 @@ public class OneInputPerRoundWrapperOperator<IN, OUT>
     @Override
     public void processWatermark(Watermark mark) throws Exception {
         processForEachWrappedOperator(
-                (round, wrappedOperator) -> wrappedOperator.processWatermark(mark));
+            (round, wrappedOperator) -> {
+                setIterationContextRound(lastEpochWatermark);
+                wrappedOperator.processWatermark(mark);
+            });
     }
 
     @Override
