@@ -24,9 +24,11 @@ import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.RichCoGroupFunction;
 import org.apache.flink.api.common.functions.RichReduceFunction;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.HeartbeatManagerOptions;
 import org.apache.flink.iteration.DataStreamList;
@@ -44,8 +46,14 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.KeyedStream;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction.Context;
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction.OnTimerContext;
 import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.transformations.PhysicalTransformation;
+import org.apache.flink.table.api.Table;
+import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.NumberSequenceIterator;
 
@@ -53,6 +61,7 @@ import org.apache.commons.collections.IteratorUtils;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -63,6 +72,8 @@ import static org.junit.Assert.assertEquals;
 /** Tests the {@link DataStreamUtils}. */
 public class CoGroupTest {
     private StreamExecutionEnvironment env;
+    private StreamTableEnvironment tEnv;
+    private Table trainDataTable;
 
     @Before
     public void before() {
@@ -72,9 +83,70 @@ public class CoGroupTest {
         env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         env.getConfig().enableObjectReuse();
         env.setRestartStrategy(RestartStrategies.noRestart());
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
+        env.setParallelism(1);
+        env.getCheckpointConfig().disableCheckpointing();
         env.setRestartStrategy(RestartStrategies.noRestart());
+        Random rand = new Random(0);
+        List<Row> trainData = new ArrayList <>();
+        for (int i = 0; i < 2000000; ++i) {
+            trainData.add(
+                Row.of(
+                    (long) rand.nextInt(200000),
+                    (long) rand.nextInt(200000),
+                    new DenseVector(10)));
+        }
+        Collections.shuffle(trainData);
+        tEnv = StreamTableEnvironment.create(env);
+
+        trainDataTable =
+            tEnv.fromDataStream(
+                env.fromCollection(
+                    trainData,
+                    new RowTypeInfo(
+                        new TypeInformation[] {
+                            Types.LONG, Types.LONG, TypeInformation.of(DenseVector.class)
+                        },
+                        new String[] {"user_id", "item_id", "rating"})));
+    }
+
+
+    @Test
+    public void testCoGroup() throws Exception {
+        DataStream <Row> data1 = tEnv.toDataStream(trainDataTable);
+        DataStream <Row> data2 = tEnv.toDataStream(trainDataTable);
+        DataStream<?> result = data1.coGroup(data2).where(new KeySelector <Row, Long>() {
+                @Override
+                public Long getKey(Row row) throws Exception {
+                    return row.getFieldAs(0);
+                }
+            }).equalTo(new KeySelector <Row, Long>() {
+                @Override
+                public Long getKey(Row row) throws Exception {
+                    return row.getFieldAs(1);
+                }
+            }).window(EndOfStreamWindows.get())
+            .apply(
+                new RichCoGroupFunction<Row, Row, Integer>() {
+                    private long time;
+                    @Override
+                    public void open(Configuration parameters) throws Exception {
+                        super.open(parameters);
+                        time = System.currentTimeMillis();
+                    }
+
+                    @Override
+                    public void close() throws Exception {
+                        super.close();
+                        System.out.println("yty : " + (System.currentTimeMillis() - time) / 1000);
+                    }
+
+                    @Override
+                    public void coGroup(
+                        Iterable<Row> iterable,
+                        Iterable<Row> iterable1,
+                        Collector<Integer> collector) {
+                    }});
+        IteratorUtils.toList(result.executeAndCollect());
     }
 
     @Test

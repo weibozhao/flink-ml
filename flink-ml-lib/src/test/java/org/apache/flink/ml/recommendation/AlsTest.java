@@ -18,19 +18,28 @@
 
 package org.apache.flink.ml.recommendation;
 
+import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
+import org.apache.flink.api.java.functions.KeySelector;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.ml.common.datastream.EndOfStreamWindows;
 import org.apache.flink.ml.recommendation.als.Als;
 import org.apache.flink.ml.recommendation.als.AlsModel;
+import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
+import org.apache.flink.streaming.api.functions.windowing.RichWindowFunction;
+import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.test.util.AbstractTestBase;
 import org.apache.flink.types.Row;
+import org.apache.flink.util.Collector;
 
 import org.apache.commons.collections.IteratorUtils;
 import org.junit.Before;
@@ -38,7 +47,9 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
@@ -77,14 +88,16 @@ public class AlsTest extends AbstractTestBase {
         env.getCheckpointConfig().disableCheckpointing(); // enableCheckpointing(100);
         env.setRestartStrategy(RestartStrategies.noRestart());
         tEnv = StreamTableEnvironment.create(env);
-        // Random rand = new Random(0);
-        // List<Row> trainData = new ArrayList<>();
-        // for (int i = 0; i < 2000000; ++i) {
+        //Random rand = new Random(0);
+        //List<Row> trainData = new ArrayList<>();
+        //for (int i = 0; i < 20; ++i) {
         //    trainData.add(
-        //            Row.of((long) rand.nextInt(200), (long) rand.nextInt(200),
-        // rand.nextDouble()));
-        // }
-        // Collections.shuffle(trainData);
+        //            Row.of(
+        //                    (long) rand.nextInt(50000),
+        //                    (long) rand.nextInt(50000),
+        //                    rand.nextDouble()));
+        //}
+        Collections.shuffle(trainData);
         trainDataTable =
                 tEnv.fromDataStream(
                         env.fromCollection(
@@ -106,6 +119,43 @@ public class AlsTest extends AbstractTestBase {
             System.out.println(label + " " + prediction);
             // assertTrue(Math.abs(prediction - label) / label < PREDICTION_TOLERANCE);
         }
+    }
+
+
+    @Test
+    public void testKeyBy() throws Exception {
+        DataStream <Row> data1 = tEnv.toDataStream(trainDataTable).map(new MapFunction <Row, Row>() {
+            @Override
+            public Row map(Row row) throws Exception {
+                return Row.join(Row.of(1), row);
+            }
+        });
+        DataStream <Row> data2 = tEnv.toDataStream(trainDataTable).map(new MapFunction <Row, Row>() {
+            @Override
+            public Row map(Row row) throws Exception {
+                return Row.join(Row.of(2), row);
+            }
+        });
+
+        DataStream<Row> left = data1.union(data2).keyBy(new KeySelector <Row, Long>() {
+                @Override
+                public Long getKey(Row row) throws Exception {
+                    return row.getFieldAs(1);
+                }
+        }).window(EndOfStreamWindows.get())
+            .apply(new RichWindowFunction <Row, Row, Long, TimeWindow>() {
+                @Override
+                public void apply(Long aLong, TimeWindow timeWindow, Iterable <Row> iterable,
+                                  Collector <Row> collector) throws Exception {
+                    for (Row row : iterable) {
+                        System.out.println(row);
+                    }
+                    System.out.println();
+                }
+            });
+
+
+        IteratorUtils.toList(left.executeAndCollect());
     }
 
     @Test
@@ -174,13 +224,13 @@ public class AlsTest extends AbstractTestBase {
                         .setUserCol("user_id")
                         .setItemCol("item_id")
                         .setRatingCol("rating")
-                        .setNumUserBlocks(2)
-                        .setMaxIter(5)
+                        .setNumUserBlocks(1)
+                        .setMaxIter(2)
                         .setRank(10)
                         .setAlpha(0.1)
                         .setRegParam(0.1)
                         .setImplicitPrefs(true)
-                        .setNumItemBlocks(2)
+                        .setNumItemBlocks(1)
                         .setPredictionCol("pred");
         Table output = als.fit(trainDataTable).transform(trainDataTable.limit(100))[0];
         verifyPredictionResult(output, als.getRatingCol(), als.getPredictionCol());
