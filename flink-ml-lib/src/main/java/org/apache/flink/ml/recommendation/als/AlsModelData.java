@@ -134,7 +134,7 @@ public class AlsModelData {
                             for (int j = 0; j < rank; ++j) {
                                 factors[j] = inputViewStreamWrapper.readFloat();
                             }
-                            userFactors.add(Tuple2.of(id, factors));
+                            itemFactors.add(Tuple2.of(id, factors));
                         }
                         return new AlsModelData(userFactors, itemFactors);
                     } catch (EOFException e) {
