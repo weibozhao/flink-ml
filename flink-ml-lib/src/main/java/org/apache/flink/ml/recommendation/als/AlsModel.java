@@ -50,7 +50,7 @@ public class AlsModel implements Model<AlsModel>, AlsModelParams<AlsModel> {
 
     private final Map<Param<?>, Object> paramMap = new HashMap<>();
 
-    private Table modelDataTable;
+    protected Table modelDataTable;
 
     public AlsModel() {
         ParamUtils.initializeMapWithDefaultValues(paramMap, this);

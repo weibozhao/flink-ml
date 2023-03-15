@@ -20,6 +20,7 @@ package org.apache.flink.ml.recommendation.als;
 
 import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
+import org.apache.flink.api.common.functions.MapPartitionFunction;
 import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.common.functions.RichCoGroupFunction;
 import org.apache.flink.api.common.functions.RichFilterFunction;
@@ -32,6 +33,7 @@ import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.api.java.typeutils.GenericTypeInfo;
+import org.apache.flink.api.java.typeutils.TupleTypeInfo;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.iteration.DataStreamList;
 import org.apache.flink.iteration.IterationBody;
@@ -54,6 +56,7 @@ import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.BoundedOneInput;
@@ -67,9 +70,6 @@ import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.OutputTag;
 import org.apache.flink.util.Preconditions;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -87,13 +87,13 @@ import java.util.Random;
  * <p>ALS tries to decompose a matrix R as R = X * Yt. Here X and Y are called factor matrices.
  * Matrix R is usually a sparse matrix representing ratings given from users to items. ALS tries to
  * find X and Y that minimize || R - X * Yt ||^2. This is done by iterations. At each step, X is
- * fixed and Y is solved, then Y is fixed and X is solved. The algorithm is described in
- * "Large-scale Parallel Collaborative Filtering for the Netflix Prize, 2007" We also support
- * implicit preference model described in "Collaborative Filtering for Implicit Feedback Datasets,
- * 2008".
+ * fixed and Y is solved, then Y is fixed and X is solved.
+ *
+ * <p>The algorithm is described in "Large-scale Parallel Collaborative Filtering for the Netflix
+ * Prize, 2007". This algorithm also supports implicit preference model described in "Collaborative
+ * Filtering for Implicit Feedback Datasets, 2008".
  */
 public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
-    private static final Logger LOG = LoggerFactory.getLogger(Als.class);
     private final Map<Param<?>, Object> paramMap = new HashMap<>();
 
     public Als() {
@@ -129,28 +129,30 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                         .returns(Types.TUPLE(Types.LONG, Types.LONG, Types.FLOAT));
 
         /* Initializes variables before iteration. */
-        DataStream<Ratings> graphData = initGraph(alsInput);
-        DataStream<Factors> userItemFactors = initFactors(graphData, getRank(), getSeed());
-        DataStream yty = initYtY(userItemFactors, getRank(), getImplicitprefs());
+        DataStream<Ratings> ratingData = initRatings(alsInput);
+        DataStream<Factors> userItemFactors = initFactors(ratingData, getRank(), getSeed());
+        DataStream yty = initYty(userItemFactors);
 
+        /* The iterations to solve the als problem. */
         DataStream<List<Factors>> result =
                 Iterations.iterateBoundedStreamsUntilTermination(
                                 DataStreamList.of(userItemFactors, yty),
-                                ReplayableDataStreamList.replay(graphData),
+                                ReplayableDataStreamList.replay(ratingData),
                                 IterationConfig.newBuilder()
                                         .setOperatorLifeCycle(OperatorLifeCycle.PER_ROUND)
                                         .build(),
                                 new TrainIterationBody(
                                         getRank(),
-                                        getNonnegative(),
+                                        getNonNegative(),
                                         getMaxIter(),
-                                        getImplicitprefs(),
+                                        getImplicitPrefs(),
                                         getRegParam(),
                                         getAlpha(),
                                         getNumUserBlocks(),
                                         getNumItemBlocks()))
                         .get(0);
 
+        /* Generates model data with iteration results. */
         DataStream<AlsModelData> modelData =
                 result.transform(
                                 "generateModelData",
@@ -163,31 +165,12 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         return model;
     }
 
-    private static class GenerateModelData extends AbstractStreamOperator<AlsModelData>
-            implements OneInputStreamOperator<List<Factors>, AlsModelData>, BoundedOneInput {
-
-        private final List<Tuple2<Long, float[]>> userFactors = new ArrayList<>();
-        private final List<Tuple2<Long, float[]>> itemFactors = new ArrayList<>();
-
-        @Override
-        public void endInput() throws Exception {
-            output.collect(new StreamRecord<>(new AlsModelData(userFactors, itemFactors)));
-        }
-
-        @Override
-        public void processElement(StreamRecord<List<Factors>> streamRecord) throws Exception {
-            List<Factors> factorsArray = streamRecord.getValue();
-
-            for (Factors factors : factorsArray) {
-                if (factors.identity == 0) {
-                    userFactors.add(Tuple2.of(factors.nodeId, factors.factors));
-                } else {
-                    itemFactors.add(Tuple2.of(factors.nodeId, factors.factors));
-                }
-            }
-        }
-    }
-
+    /**
+     * The train iteration body includes two main actions. The first action is updating the user
+     * factors with the rating information and the item factors. The second one is updating the item
+     * factors with the rating information and the user factors. These two actions occur alternately
+     * and iteratively.
+     */
     private static class TrainIterationBody implements IterationBody {
         private final int numFactors;
         private final boolean nonNegative;
@@ -227,12 +210,12 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                     IterationBody.forEachRound(
                             dataStreams,
                             input -> {
-                                DataStream<Ratings> graphData = dataStreams.get(0);
+                                DataStream<Ratings> ratingData = dataStreams.get(0);
                                 Tuple2<DataStream<Factors>, DataStream<Tuple2<double[], Integer>>>
-                                        factorsAndYtY =
+                                        factorsAndYty =
                                                 updateFactors(
                                                         userAndItemFactors,
-                                                        graphData,
+                                                        ratingData,
                                                         yty,
                                                         numFactors,
                                                         nonNegative,
@@ -241,7 +224,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                                         alpha,
                                                         numUserBlocks,
                                                         numItemBlocks);
-                                return DataStreamList.of(factorsAndYtY.f0, factorsAndYtY.f1);
+                                return DataStreamList.of(factorsAndYty.f0, factorsAndYty.f1);
                             });
 
             DataStream<Factors> feedbackFactors = variableStreams.get(0);
@@ -261,9 +244,43 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         }
     }
 
+    /** Generates the ModelData from the results of iteration. */
+    private static class GenerateModelData extends AbstractStreamOperator<AlsModelData>
+            implements OneInputStreamOperator<List<Factors>, AlsModelData>, BoundedOneInput {
+
+        private final List<Tuple2<Long, float[]>> userFactors = new ArrayList<>();
+        private final List<Tuple2<Long, float[]>> itemFactors = new ArrayList<>();
+
+        @Override
+        public void endInput() throws Exception {
+            output.collect(new StreamRecord<>(new AlsModelData(userFactors, itemFactors)));
+        }
+
+        @Override
+        public void processElement(StreamRecord<List<Factors>> streamRecord) throws Exception {
+            List<Factors> factorsArray = streamRecord.getValue();
+
+            for (Factors factors : factorsArray) {
+                if (factors.identity == 0) {
+                    userFactors.add(Tuple2.of(factors.nodeId, factors.factors));
+                } else {
+                    itemFactors.add(Tuple2.of(factors.nodeId, factors.factors));
+                }
+            }
+        }
+    }
+
+    /**
+     * Initializes the user factors and the item factors with a random function.
+     *
+     * @param ratingData Rating data generated by graph.
+     * @param rank Rank of the factorization.
+     * @param seed The random seed.
+     * @return The factors of the user and the item.
+     */
     private DataStream<Factors> initFactors(
-            DataStream<Ratings> graphData, int rank, final long seed) {
-        return graphData
+            DataStream<Ratings> ratingData, int rank, final long seed) {
+        return ratingData
                 .map(
                         new RichMapFunction<Ratings, Factors>() {
                             transient Random random;
@@ -285,8 +302,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                 reusedFactors.nodeId = value.nodeId;
 
                                 for (int i = 0; i < rank; i++) {
-                                    reusedFactors.factors[i] =
-                                            .1F * (i + 1) / 10.0F; // random.nextFloat();
+                                    reusedFactors.factors[i] = random.nextFloat();
                                 }
                                 return reusedFactors;
                             }
@@ -294,63 +310,98 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                 .name("InitFactors");
     }
 
-    private DataStream<Ratings> initGraph(DataStream<Tuple3<Long, Long, Float>> alsInput) {
+    /**
+     * Initializes the ratings data with the input graph.
+     *
+     * @param alsInput The input graph.
+     * @return The ratings data.
+     */
+    private DataStream<Ratings> initRatings(DataStream<Tuple3<Long, Long, Float>> alsInput) {
 
-        return alsInput.flatMap(
-                        new RichFlatMapFunction<
-                                Tuple3<Long, Long, Float>, Tuple4<Long, Long, Float, Byte>>() {
+        DataStream<Ratings> ratings =
+                alsInput.flatMap(
+                                new RichFlatMapFunction<
+                                        Tuple3<Long, Long, Float>,
+                                        Tuple4<Long, Long, Float, Byte>>() {
 
-                            @Override
-                            public void flatMap(
-                                    Tuple3<Long, Long, Float> value,
-                                    Collector<Tuple4<Long, Long, Float, Byte>> out) {
-                                out.collect(Tuple4.of(value.f0, value.f1, value.f2, (byte) 0));
-                                out.collect(Tuple4.of(value.f1, value.f0, value.f2, (byte) 1));
-                            }
-                        })
-                .keyBy(
-                        (KeySelector<Tuple4<Long, Long, Float, Byte>, String>)
-                                value -> value.f3.toString() + value.f0)
-                .window(EndOfStreamWindows.get())
-                .process(
-                        new ProcessWindowFunction<
-                                Tuple4<Long, Long, Float, Byte>, Ratings, String, TimeWindow>() {
+                                    @Override
+                                    public void flatMap(
+                                            Tuple3<Long, Long, Float> value,
+                                            Collector<Tuple4<Long, Long, Float, Byte>> out) {
+                                        out.collect(
+                                                Tuple4.of(value.f0, value.f1, value.f2, (byte) 0));
+                                        out.collect(
+                                                Tuple4.of(value.f1, value.f0, value.f2, (byte) 1));
+                                    }
+                                })
+                        .keyBy(
+                                (KeySelector<Tuple4<Long, Long, Float, Byte>, String>)
+                                        value -> value.f3.toString() + value.f0)
+                        .window(EndOfStreamWindows.get())
+                        .process(
+                                new ProcessWindowFunction<
+                                        Tuple4<Long, Long, Float, Byte>,
+                                        Ratings,
+                                        String,
+                                        TimeWindow>() {
 
-                            @Override
-                            public void process(
-                                    String o,
-                                    Context context,
-                                    Iterable<Tuple4<Long, Long, Float, Byte>> iterable,
-                                    Collector<Ratings> collector) {
-                                byte identity = -1;
-                                long srcNodeId = -1L;
-                                List<Long> neighbors = new ArrayList<>();
-                                List<Float> ratings = new ArrayList<>();
+                                    @Override
+                                    public void process(
+                                            String o,
+                                            Context context,
+                                            Iterable<Tuple4<Long, Long, Float, Byte>> iterable,
+                                            Collector<Ratings> collector) {
+                                        byte identity = -1;
+                                        long srcNodeId = -1L;
+                                        List<Tuple2<Long, Float>> neighbors = new ArrayList<>();
 
-                                for (Tuple4<Long, Long, Float, Byte> v : iterable) {
-                                    identity = v.f3;
-                                    srcNodeId = v.f0;
-                                    neighbors.add(v.f1);
-                                    ratings.add(v.f2);
-                                }
+                                        for (Tuple4<Long, Long, Float, Byte> v : iterable) {
+                                            identity = v.f3;
+                                            srcNodeId = v.f0;
+                                            neighbors.add(Tuple2.of(v.f1, v.f2));
+                                        }
+                                        Ratings returnRatings = new Ratings();
+                                        returnRatings.nodeId = srcNodeId;
+                                        returnRatings.identity = identity;
+                                        returnRatings.neighbors = new long[neighbors.size()];
+                                        returnRatings.ratings = new float[neighbors.size()];
 
-                                Ratings returnRatings = new Ratings();
-                                returnRatings.nodeId = srcNodeId;
-                                returnRatings.identity = identity;
-                                returnRatings.neighbors = new long[neighbors.size()];
-                                returnRatings.ratings = new float[neighbors.size()];
+                                        for (int i = 0; i < returnRatings.neighbors.length; i++) {
+                                            returnRatings.neighbors[i] = neighbors.get(i).f0;
+                                            returnRatings.ratings[i] = neighbors.get(i).f1;
+                                        }
+                                        collector.collect(returnRatings);
+                                    }
+                                })
+                        .returns(GenericTypeInfo.of(Ratings.class))
+                        .name("initRatings");
 
-                                for (int i = 0; i < returnRatings.neighbors.length; i++) {
-                                    returnRatings.neighbors[i] = neighbors.get(i);
-                                    returnRatings.ratings[i] = ratings.get(i);
-                                }
-                                collector.collect(returnRatings);
-                            }
-                        })
-                .returns(GenericTypeInfo.of(Ratings.class))
-                .name("init_graph");
+        return DataStreamUtils.mapPartition(ratings, new SortFunction());
     }
 
+    private static class SortFunction implements MapPartitionFunction<Ratings, Ratings> {
+
+        @Override
+        public void mapPartition(Iterable<Ratings> iterable, Collector<Ratings> collector) {
+            List<Ratings> listRatings = new ArrayList<>();
+            for (Ratings ratings : iterable) {
+                listRatings.add(ratings);
+            }
+            listRatings.sort(
+                    (o1, o2) -> {
+                        if (o1.nodeId != o2.nodeId) {
+                            return Long.compare(o1.nodeId, o2.nodeId);
+                        } else {
+                            return Byte.compare(o1.identity, o2.identity);
+                        }
+                    });
+            for (Ratings ratings : listRatings) {
+                collector.collect(ratings);
+            }
+        }
+    }
+
+    /** Gets the current step of the iteration. */
     private static class StepFunction extends AbstractStreamOperator<Integer>
             implements OneInputStreamOperator<Factors, Integer>,
                     BoundedOneInput,
@@ -378,8 +429,8 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
      * Update user factors or item factors in an iteration step. Only a mini-batch of users' or
      * items' factors are updated at one step.
      *
-     * @param userAndItemFactors Users' and items' factors at the beginning of the step.
-     * @param graphData Users' and items' ratings.
+     * @param userAndItemFactors Users' and items' factors at the beginning of this step.
+     * @param ratingData Users' and items' ratings.
      * @param yty Matrix variables used in implicit mode.
      * @param numFactors Number of factors.
      * @param nonNegative Whether to enforce non-negativity constraint.
@@ -393,7 +444,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
     @SuppressWarnings({"unchecked"})
     private static Tuple2<DataStream<Factors>, DataStream<Tuple2<double[], Integer>>> updateFactors(
             DataStream<Factors> userAndItemFactors,
-            DataStream<Ratings> graphData,
+            DataStream<Ratings> ratingData,
             DataStream<Tuple2<double[], Integer>> yty,
             final int numFactors,
             final boolean nonNegative,
@@ -412,7 +463,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         // Gets the miniBatch
         DataStream<Tuple2<Integer, Ratings>> miniBatch =
                 BroadcastUtils.withBroadcastStream(
-                                Collections.singletonList(graphData),
+                                Collections.singletonList(ratingData),
                                 broadcastMap,
                                 inputList -> {
                                     DataStream<Ratings> allData =
@@ -441,16 +492,17 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                                             subStepNo = -2;
                                                             userOrItem = -1;
                                                         } else {
-                                                            int tmpStep =
+                                                            int superStep =
                                                                     step
                                                                             % (numUserBlocks
                                                                                     + numItemBlocks);
 
-                                                            if (tmpStep < numUserBlocks) {
-                                                                subStepNo = tmpStep;
+                                                            if (superStep < numUserBlocks) {
+                                                                subStepNo = superStep;
                                                                 userOrItem = 0;
                                                             } else {
-                                                                subStepNo = tmpStep - numUserBlocks;
+                                                                subStepNo =
+                                                                        superStep - numUserBlocks;
                                                                 userOrItem = 1;
                                                             }
                                                         }
@@ -478,7 +530,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                     }
                                 });
 
-        // Generate the request.
+        // Generates the request.
         // Tuple: srcPartitionId, targetIdentity, targetNodeId
         DataStream<Tuple3<Integer, Byte, Long>> request =
                 miniBatch // Tuple: partitionId, ratings
@@ -505,11 +557,41 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                 })
                         .name("GenerateRequest");
 
-        // Generate the response
-        // Tuple: srcPartitionId, targetFactors
+        DataStream<Factors> userOrItemFactors =
+                BroadcastUtils.withBroadcastStream(
+                        Collections.singletonList(userAndItemFactors),
+                        broadcastMap,
+                        inputList -> {
+                            DataStream<Factors> allData = (DataStream<Factors>) inputList.get(0);
+                            return allData.filter(
+                                    new RichFilterFunction<Factors>() {
+                                        private Integer subStep;
+
+                                        @Override
+                                        public boolean filter(Factors factors) {
+                                            if (subStep == null) {
+                                                List<Object> broadStep =
+                                                        getRuntimeContext()
+                                                                .getBroadcastVariable("step");
+
+                                                int step =
+                                                        broadStep.size() > 0
+                                                                ? (int) broadStep.get(0)
+                                                                : -1;
+                                                subStep = step % (numUserBlocks + numItemBlocks);
+                                            }
+                                            if (subStep >= numUserBlocks) {
+                                                return factors.identity == 0;
+                                            } else {
+                                                return factors.identity == 1;
+                                            }
+                                        }
+                                    });
+                        });
+
+        /* Generates the response information, which will be used to update the factors. */
         DataStream<Tuple2<Integer, Factors>> response =
-                request // Tuple: srcPartitionId, targetIdentity, targetNodeId
-                        .coGroup(userAndItemFactors) // Factors
+                request.coGroup(userOrItemFactors)
                         .where(
                                 (KeySelector<Tuple3<Integer, Byte, Long>, String>)
                                         value -> value.f1.toString() + value.f2)
@@ -525,21 +607,19 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
 
                                     private transient int[] flag = null;
                                     private transient int[] partitionsIds = null;
-									private long time;
+
                                     @Override
                                     public void open(Configuration parameters) {
                                         int numTasks =
                                                 getRuntimeContext().getNumberOfParallelSubtasks();
                                         flag = new int[numTasks];
                                         partitionsIds = new int[numTasks];
-										time = System.currentTimeMillis();
                                     }
 
                                     @Override
                                     public void close() {
                                         flag = null;
                                         partitionsIds = null;
-										System.out.println((System.currentTimeMillis() - time) / 1000);
                                     }
 
                                     @Override
@@ -588,18 +668,21 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                     }
                                 });
 
+        /* Repartition of the data is to improve the performance of coGroup. */
+        miniBatch = miniBatch.partitionCustom((chunkId, numPartitions) -> chunkId, x -> x.f0);
+        response = response.partitionCustom((chunkId, numPartitions) -> chunkId, x -> x.f0);
         DataStream<Factors> updatedFactors;
 
-        DataStream<Tuple2<double[], Integer>> newYty = null;
-        // Calculate factors
+        DataStream<Tuple2<double[], Integer>> newYty;
+        // Calculates factors
         if (implicitPrefs) {
-            newYty = computeYtY(userAndItemFactors, yty, numFactors, numUserBlocks, numItemBlocks);
+            newYty = computeYty(userOrItemFactors, yty, numFactors, numUserBlocks, numItemBlocks);
             // Tuple: Identity, nodeId, factors
             updatedFactors =
                     BroadcastUtils.withBroadcastStream(
                             Arrays.asList(miniBatch, response),
                             Collections.singletonMap(
-                                    "YtY",
+                                    "Yty",
                                     newYty.map(
                                             (MapFunction<Tuple2<double[], Integer>, double[]>)
                                                     ytyWithEpoch -> ytyWithEpoch.f0)),
@@ -624,19 +707,14 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                                         nonNegative));
                             });
         } else {
-            // Tuple: Identity, nodeId, factors
+            newYty = yty;
             updatedFactors =
-                    miniBatch // Tuple: partitionId, Ratings
-                            .coGroup(response) // Tuple: partitionId, Factors
+                    miniBatch
+                            .coGroup(response)
                             .where(value -> value.f0)
                             .equalTo(value -> value.f0)
                             .window(EndOfStreamWindows.get())
-                            .apply(
-                                    new UpdateFactorsFunc(
-                                            true,
-                                            numFactors,
-                                            regParam,
-                                            nonNegative)); // .name("CalculateNewFactorsExplicit");
+                            .apply(new UpdateFactorsFunc(true, numFactors, regParam, nonNegative));
         }
 
         DataStream<Factors> factors =
@@ -732,16 +810,10 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         final boolean explicit;
         final boolean nonNegative;
 
-        private int numNodes = 0;
-        private long numEdges = 0L;
-        private long numNeighbors = 0L;
         private boolean firstStep = true;
         private transient double[] yty = null;
 
-		private long totalTime = 0L;
-
-
-		UpdateFactorsFunc(boolean explicit, int numFactors, double lambda, boolean nonNegative) {
+        UpdateFactorsFunc(boolean explicit, int numFactors, double lambda, boolean nonNegative) {
             this.explicit = explicit;
             this.numFactors = numFactors;
             this.lambda = lambda;
@@ -763,53 +835,33 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         }
 
         @Override
-        public void open(Configuration parameters) {
-            numNodes = 0;
-            numEdges = 0;
-            numNeighbors = 0L;
-			totalTime = System.currentTimeMillis();
-        }
-
-        @Override
-        public void close() {
-            LOG.info(
-                    "Updated factors, num nodes {}, num edges {}, recv neighbors {}",
-                    numNodes,
-                    numEdges,
-                    numNeighbors);
-			System.out.println("total time : " + (System.currentTimeMillis() - totalTime) / 1000);
-        }
-
-        @Override
         public void coGroup(
                 Iterable<Tuple2<Integer, Ratings>> ratings,
                 Iterable<Tuple2<Integer, Factors>> factors,
                 Collector<Factors> out) {
             if (firstStep) {
                 if (!explicit) {
-                    yty = (double[]) getRuntimeContext().getBroadcastVariable("YtY").get(0);
+                    yty = (double[]) getRuntimeContext().getBroadcastVariable("Yty").get(0);
                 }
                 firstStep = false;
             }
 
             List<Tuple2<Integer, Factors>> cachedFactors = new ArrayList<>();
             Map<Long, Integer> index2pos = new HashMap<>();
-            numNeighbors = 0;
-            // loop over received factors
+            int numNeighbors = 0;
+            /* loops over received factors */
             for (Tuple2<Integer, Factors> factor : factors) {
                 cachedFactors.add(factor);
-                index2pos.put(factor.f1.nodeId, (int) numNeighbors);
+                index2pos.put(factor.f1.nodeId, numNeighbors);
                 numNeighbors++;
             }
 
             NormalEquationSolver ls = new NormalEquationSolver(numFactors);
-            DenseVector x = new DenseVector(numFactors); // the solution buffer
-            DenseVector buffer = new DenseVector(numFactors); // buffers for factors
-            // loop over local nodes
+            DenseVector x = new DenseVector(numFactors);
+            DenseVector buffer = new DenseVector(numFactors);
+            /* loops over local nodes. */
             for (Tuple2<Integer, Ratings> t2 : ratings) {
-                numNodes++;
-                numEdges += t2.f1.neighbors.length;
-                // solve an lease square problem
+                /* solves an lease square problem. */
                 ls.reset();
 
                 if (explicit) {
@@ -860,83 +912,27 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         }
     }
 
-    private static DataStream<Tuple2<double[], Integer>> initYtY(
-            DataStream<Factors> factors, final int numFactors, final boolean implicitPrefs) {
-        if (implicitPrefs) {
-            DataStream<Tuple2<double[], Integer>> localYtY =
-                    factors.transform(
-                            "computeInitYtY",
-                            Types.TUPLE(TypeInformation.of(double[].class), Types.INT),
-                            new ComputeInitLocalYtY(numFactors));
-
-            return DataStreamUtils.reduce(
-                    localYtY,
-                    (ReduceFunction<Tuple2<double[], Integer>>)
-                            (value1, value2) -> {
-                                int n2 = numFactors * numFactors;
-
-                                for (int j = 0; j < n2; ++j) {
-                                    value1.f0[j] += value2.f0[j];
-                                }
-                                return value1;
-                            });
-        } else {
-            return null;
-        }
+    private static DataStream<Tuple2<double[], Integer>> initYty(DataStream<Factors> factors) {
+        StreamExecutionEnvironment env = factors.getExecutionEnvironment();
+        List<Tuple2<double[], Integer>> data = new ArrayList<>();
+        data.add(Tuple2.of(new double[0], -1));
+        return env.fromCollection(
+                data, new TupleTypeInfo<>(TypeInformation.of(double[].class), Types.INT));
     }
 
-    private static class ComputeInitLocalYtY
-            extends AbstractStreamOperator<Tuple2<double[], Integer>>
-            implements OneInputStreamOperator<Factors, Tuple2<double[], Integer>>, BoundedOneInput {
-
-        private final List<Factors> factorsList = new ArrayList<>();
-        private final int numFactors;
-        private final double[] blockYtY;
-
-        public ComputeInitLocalYtY(int numFactors) {
-            this.numFactors = numFactors;
-            blockYtY = new double[numFactors * numFactors];
-        }
-
-        @Override
-        public void endInput() throws Exception {
-            Arrays.fill(blockYtY, 0.);
-
-            for (Factors v : factorsList) {
-                if (v.identity != 0) {
-                    continue;
-                }
-
-                float[] factors1 = v.factors;
-                for (int i = 0; i < numFactors; i++) {
-                    for (int j = 0; j < numFactors; j++) {
-                        blockYtY[i * numFactors + j] += factors1[i] * factors1[j];
-                    }
-                }
-            }
-
-            output.collect(new StreamRecord<>(Tuple2.of(blockYtY, -1)));
-        }
-
-        @Override
-        public void processElement(StreamRecord<Factors> streamRecord) throws Exception {
-            factorsList.add(streamRecord.getValue());
-        }
-    }
-
-    private static DataStream<Tuple2<double[], Integer>> computeYtY(
+    private static DataStream<Tuple2<double[], Integer>> computeYty(
             DataStream<Factors> factors,
             DataStream<Tuple2<double[], Integer>> yty,
             final int numFactors,
             final int numUserBlocks,
             final int numItemBlocks) {
 
-        DataStream<Tuple2<double[], Integer>> localYtY =
-                factors.flatMap(new ComputeLocalYtY(numFactors, numUserBlocks, numItemBlocks));
+        DataStream<Tuple2<double[], Integer>> localYty =
+                factors.flatMap(new ComputeLocalYty(numFactors, numUserBlocks, numItemBlocks));
 
         DataStream<Tuple2<double[], Integer>> newYty =
                 DataStreamUtils.reduce(
-                        localYtY,
+                        localYty,
                         (ReduceFunction<Tuple2<double[], Integer>>)
                                 (value1, value2) -> {
                                     int n2 = numFactors * numFactors;
@@ -952,25 +948,25 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                         new FlatMapFunction<
                                 Tuple2<double[], Integer>, Tuple2<double[], Integer>>() {
                             private boolean firstStep = true;
-                            private Tuple2<double[], Integer> buffer;
+                            private Tuple2<double[], Integer> ytyLast;
 
                             @Override
                             public void flatMap(
                                     Tuple2<double[], Integer> ytyWithEpoch,
                                     Collector<Tuple2<double[], Integer>> collector) {
                                 if (firstStep) {
-                                    buffer = ytyWithEpoch;
+                                    ytyLast = ytyWithEpoch;
                                     firstStep = false;
                                 } else {
-                                    if (buffer.f1 > ytyWithEpoch.f1) {
-                                        if (BLAS.norm2(new DenseVector(buffer.f0)) == 0) {
+                                    if (ytyLast.f1 > ytyWithEpoch.f1) {
+                                        if (BLAS.norm2(new DenseVector(ytyLast.f0)) == 0) {
                                             collector.collect(ytyWithEpoch);
                                         } else {
-                                            collector.collect(buffer);
+                                            collector.collect(ytyLast);
                                         }
                                     } else {
                                         if (BLAS.norm2(new DenseVector(ytyWithEpoch.f0)) == 0) {
-                                            collector.collect(buffer);
+                                            collector.collect(ytyLast);
                                         } else {
                                             collector.collect(ytyWithEpoch);
                                         }
@@ -981,34 +977,23 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                 .setParallelism(1);
     }
 
-    private static class ComputeLocalYtY extends RichFlatMapFunction <Factors, Tuple2 <double[], Integer>>
-		implements IterationListener <Tuple2 <double[], Integer>> {
+    private static class ComputeLocalYty
+            extends RichFlatMapFunction<Factors, Tuple2<double[], Integer>>
+            implements IterationListener<Tuple2<double[], Integer>> {
         private final List<Factors> factorsList = new ArrayList<>();
         private final int numFactors;
         private final int numUserBlocks;
         private final int numItemBlocks;
-        private final double[] blockYtY;
-		private long time;
-        public ComputeLocalYtY(int numFactors, final int numUserBlocks, final int numItemBlocks) {
+        private final double[] blockYty;
+
+        public ComputeLocalYty(int numFactors, final int numUserBlocks, final int numItemBlocks) {
             this.numFactors = numFactors;
-            blockYtY = new double[numFactors * numFactors];
+            blockYty = new double[numFactors * numFactors];
             this.numUserBlocks = numUserBlocks;
             this.numItemBlocks = numItemBlocks;
         }
 
-		@Override
-		public void open(Configuration parameters) throws Exception {
-			super.open(parameters);
-			time = System.currentTimeMillis();
-		}
-
-		@Override
-		public void close() throws Exception {
-			super.close();
-			System.out.println("yty : " + (System.currentTimeMillis() - time) / 1000);
-		}
-
-		@Override
+        @Override
         public void onEpochWatermarkIncremented(
                 int epochWatermark,
                 Context context,
@@ -1017,23 +1002,23 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
             int tmpStep = epochWatermark % (numUserBlocks + numItemBlocks);
             int tmpIdentity = (tmpStep >= numUserBlocks) ? 0 : 1;
             if (tmpStep == 0 || tmpStep == numUserBlocks) {
-                Arrays.fill(blockYtY, 0.);
-
+                Arrays.fill(blockYty, 0.);
                 for (Factors v : factorsList) {
                     if (v.identity != tmpIdentity) {
                         continue;
                     }
+                    double[] buff = new double[numFactors];
+                    v.getFactorsAsDoubleArray(buff);
 
                     float[] factors1 = v.factors;
                     for (int i = 0; i < numFactors; i++) {
                         for (int j = 0; j < numFactors; j++) {
-                            blockYtY[i * numFactors + j] += factors1[i] * factors1[j];
+                            blockYty[i * numFactors + j] += factors1[i] * factors1[j];
                         }
                     }
                 }
-                System.out.println("computeYtY OK." + epochWatermark);
             }
-            collector.collect(Tuple2.of(blockYtY, epochWatermark));
+            collector.collect(Tuple2.of(blockYty, epochWatermark));
         }
 
         @Override
@@ -1050,7 +1035,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
     /** Factors of a user or an item. */
     public static class Factors {
         /**
-         * If identity is 0, then this is a user factors. if identity is 1, then this is an item
+         * If identity is 0, then it is a user factors. if identity is 1, then it is an item
          * factors.
          */
         public byte identity;
@@ -1058,14 +1043,14 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         /* UserId or itemId decided by identity. */
         public long nodeId;
 
-		/* Factors of this nodeId. */
+        /* Factors of this nodeId. */
         public float[] factors;
 
         public Factors() {}
 
         /**
-         * Since this algorithm uses double precision to solve the least square problem, It's need to
-         * convert the factors to double array.
+         * Since this algorithm uses double precision to solve the least square problem, we need to
+         * give the converting functions between the factors and the double array.
          */
         public void getFactorsAsDoubleArray(double[] buffer) {
             for (int i = 0; i < factors.length; i++) {
@@ -1083,7 +1068,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         }
     }
 
-    /** All ratings of a user or an item. */
+    /** The whole ratings of a user or an item. */
     public static class Ratings {
 
         public Ratings() {}
@@ -1097,10 +1082,10 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         /* UserId or itemId decided by identity. */
         public long nodeId;
 
-		/* Neighbors of this nodeId. */
+        /* Neighbors of this nodeId. */
         public long[] neighbors;
 
-		/* Ratings from neighbors to this nodeId. */
+        /* Ratings from neighbors to this nodeId. */
         public float[] ratings;
     }
 

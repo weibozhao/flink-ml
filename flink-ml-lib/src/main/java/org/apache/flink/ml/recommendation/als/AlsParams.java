@@ -44,7 +44,7 @@ public interface AlsParams<T> extends HasSeed<T>, AlsModelParams<T> {
     Param<Double> REG_PARAM =
             new DoubleParam("regParam", "Regularization parameter.", 0.1, ParamValidators.gtEq(0.));
 
-    Param<Boolean> IMPLICITPREFS =
+    Param<Boolean> IMPLICIT_PREFS =
             new BooleanParam(
                     "implicitPrefs",
                     "Whether to use implicit preference.",
@@ -53,8 +53,8 @@ public interface AlsParams<T> extends HasSeed<T>, AlsModelParams<T> {
 
     Param<Boolean> NON_NEGATIVE =
             new BooleanParam(
-                    "nonnegative",
-                    "Whether to use nonnegative constraint for least squares.",
+                    "nonNegative",
+                    "Whether to use non negative constraint for least squares.",
                     false,
                     ParamValidators.alwaysTrue());
 
@@ -94,19 +94,19 @@ public interface AlsParams<T> extends HasSeed<T>, AlsModelParams<T> {
         return set(REG_PARAM, value);
     }
 
-    default Boolean getImplicitprefs() {
-        return get(IMPLICITPREFS);
+    default Boolean getImplicitPrefs() {
+        return get(IMPLICIT_PREFS);
     }
 
     default T setImplicitPrefs(Boolean value) {
-        return set(IMPLICITPREFS, value);
+        return set(IMPLICIT_PREFS, value);
     }
 
-    default Boolean getNonnegative() {
+    default Boolean getNonNegative() {
         return get(NON_NEGATIVE);
     }
 
-    default T setNonnegative(Boolean value) {
+    default T setNonNegative(Boolean value) {
         return set(NON_NEGATIVE, value);
     }
 

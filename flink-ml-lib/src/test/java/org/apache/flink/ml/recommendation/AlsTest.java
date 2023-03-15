@@ -18,28 +18,20 @@
 
 package org.apache.flink.ml.recommendation;
 
-import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
-import org.apache.flink.api.java.functions.KeySelector;
-import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.ml.common.datastream.EndOfStreamWindows;
 import org.apache.flink.ml.recommendation.als.Als;
 import org.apache.flink.ml.recommendation.als.AlsModel;
-import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
-import org.apache.flink.streaming.api.functions.windowing.RichWindowFunction;
-import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.test.util.AbstractTestBase;
 import org.apache.flink.types.Row;
-import org.apache.flink.util.Collector;
 
 import org.apache.commons.collections.IteratorUtils;
 import org.junit.Before;
@@ -51,6 +43,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Random;
 
 import static org.junit.Assert.assertEquals;
 
@@ -77,6 +70,7 @@ public class AlsTest extends AbstractTestBase {
     private static final double TOLERANCE = 1e-7;
 
     private Table trainDataTable;
+    private Table testDataTable;
 
     @Before
     public void before() {
@@ -85,18 +79,24 @@ public class AlsTest extends AbstractTestBase {
         env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         env.getConfig().enableObjectReuse();
         env.setParallelism(1);
-        env.getCheckpointConfig().disableCheckpointing(); // enableCheckpointing(100);
+        // env.setRuntimeMode(RuntimeExecutionMode.BATCH);
+        // env.setStateBackend(new EmbeddedRocksDBStateBackend());
+        // env.getCheckpointConfig().disableCheckpointing(); //
+        env.enableCheckpointing(100);
         env.setRestartStrategy(RestartStrategies.noRestart());
+        // env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         tEnv = StreamTableEnvironment.create(env);
-        //Random rand = new Random(0);
-        //List<Row> trainData = new ArrayList<>();
-        //for (int i = 0; i < 20; ++i) {
-        //    trainData.add(
-        //            Row.of(
-        //                    (long) rand.nextInt(50000),
-        //                    (long) rand.nextInt(50000),
-        //                    rand.nextDouble()));
-        //}
+        Random rand = new Random(0);
+        List<Row> trainData = new ArrayList<>();
+        for (int i = 0; i < 10000; ++i) {
+            trainData.add(
+                    Row.of((long) rand.nextInt(500), (long) rand.nextInt(200), rand.nextDouble()));
+        }
+        // Collections.shuffle(trainData);
+
+        List<Row> testData = new ArrayList<>();
+        testData.add(Row.of(1L, 5L));
+
         Collections.shuffle(trainData);
         trainDataTable =
                 tEnv.fromDataStream(
@@ -107,6 +107,14 @@ public class AlsTest extends AbstractTestBase {
                                             Types.LONG, Types.LONG, Types.DOUBLE
                                         },
                                         new String[] {"user_id", "item_id", "rating"})));
+
+        testDataTable =
+                tEnv.fromDataStream(
+                        env.fromCollection(
+                                testData,
+                                new RowTypeInfo(
+                                        new TypeInformation[] {Types.LONG, Types.LONG},
+                                        new String[] {"user_id", "item_id"})));
     }
 
     @SuppressWarnings("unchecked")
@@ -114,48 +122,11 @@ public class AlsTest extends AbstractTestBase {
             throws Exception {
         List<Row> predResult = IteratorUtils.toList(tEnv.toDataStream(output).executeAndCollect());
         for (Row predictionRow : predResult) {
-            double label = ((Number) predictionRow.getField(ratingCol)).doubleValue();
+            long label = predictionRow.getFieldAs(ratingCol);
             double prediction = (double) predictionRow.getField(predictionCol);
             System.out.println(label + " " + prediction);
             // assertTrue(Math.abs(prediction - label) / label < PREDICTION_TOLERANCE);
         }
-    }
-
-
-    @Test
-    public void testKeyBy() throws Exception {
-        DataStream <Row> data1 = tEnv.toDataStream(trainDataTable).map(new MapFunction <Row, Row>() {
-            @Override
-            public Row map(Row row) throws Exception {
-                return Row.join(Row.of(1), row);
-            }
-        });
-        DataStream <Row> data2 = tEnv.toDataStream(trainDataTable).map(new MapFunction <Row, Row>() {
-            @Override
-            public Row map(Row row) throws Exception {
-                return Row.join(Row.of(2), row);
-            }
-        });
-
-        DataStream<Row> left = data1.union(data2).keyBy(new KeySelector <Row, Long>() {
-                @Override
-                public Long getKey(Row row) throws Exception {
-                    return row.getFieldAs(1);
-                }
-        }).window(EndOfStreamWindows.get())
-            .apply(new RichWindowFunction <Row, Row, Long, TimeWindow>() {
-                @Override
-                public void apply(Long aLong, TimeWindow timeWindow, Iterable <Row> iterable,
-                                  Collector <Row> collector) throws Exception {
-                    for (Row row : iterable) {
-                        System.out.println(row);
-                    }
-                    System.out.println();
-                }
-            });
-
-
-        IteratorUtils.toList(left.executeAndCollect());
     }
 
     @Test
@@ -167,8 +138,8 @@ public class AlsTest extends AbstractTestBase {
         assertEquals(1.0, als.getAlpha(), TOLERANCE);
         assertEquals(0.1, als.getRegParam(), TOLERANCE);
         assertEquals(10, als.getRank());
-        assertEquals(false, als.getImplicitprefs());
-        assertEquals(false, als.getNonnegative());
+        assertEquals(false, als.getImplicitPrefs());
+        assertEquals(false, als.getNonNegative());
         assertEquals(10, als.getMaxIter());
         assertEquals(10, als.getNumUserBlocks());
         assertEquals(10, als.getNumItemBlocks());
@@ -181,7 +152,7 @@ public class AlsTest extends AbstractTestBase {
                 .setRegParam(0.5)
                 .setRank(100)
                 .setImplicitPrefs(false)
-                .setNonnegative(true)
+                .setNonNegative(true)
                 .setMaxIter(1000)
                 .setNumUserBlocks(5)
                 .setNumItemBlocks(5)
@@ -193,8 +164,8 @@ public class AlsTest extends AbstractTestBase {
         assertEquals(0.001, als.getAlpha(), TOLERANCE);
         assertEquals(0.5, als.getRegParam(), TOLERANCE);
         assertEquals(100, als.getRank());
-        assertEquals(true, als.getImplicitprefs());
-        assertEquals(true, als.getNonnegative());
+        assertEquals(false, als.getImplicitPrefs());
+        assertEquals(true, als.getNonNegative());
         assertEquals(1000, als.getMaxIter());
         assertEquals(5, als.getNumUserBlocks());
         assertEquals(5, als.getNumItemBlocks());
@@ -219,83 +190,50 @@ public class AlsTest extends AbstractTestBase {
 
     @Test
     public void testFitAndPredict() throws Exception {
-        Als als =
-                new Als()
-                        .setUserCol("user_id")
-                        .setItemCol("item_id")
-                        .setRatingCol("rating")
-                        .setNumUserBlocks(1)
-                        .setMaxIter(2)
-                        .setRank(10)
-                        .setAlpha(0.1)
-                        .setRegParam(0.1)
-                        .setImplicitPrefs(true)
-                        .setNumItemBlocks(1)
-                        .setPredictionCol("pred");
-        Table output = als.fit(trainDataTable).transform(trainDataTable.limit(100))[0];
-        verifyPredictionResult(output, als.getRatingCol(), als.getPredictionCol());
+        for (int i = 1; i < 2; ++i) {
+            Als als =
+                    new Als()
+                            .setUserCol("user_id")
+                            .setItemCol("item_id")
+                            .setRatingCol("rating")
+                            .setNumUserBlocks(i)
+                            .setMaxIter(1)
+                            .setRank(10)
+                            .setAlpha(0.1)
+                            .setRegParam(0.1)
+                            .setSeed(0)
+                            .setImplicitPrefs(true)
+                            .setNonNegative(true)
+                            .setNumItemBlocks(i)
+                            .setPredictionCol("pred");
+            Table output = als.fit(trainDataTable).transform(testDataTable)[0];
+            verifyPredictionResult(output, als.getItemCol(), als.getPredictionCol());
+        }
     }
 
-    // @Test
-    // public void testInputTypeConversion() throws Exception {
-    // trainDataTable = TestUtils.convertDataTypesToSparseInt(tEnv, trainDataTable);
-    // assertArrayEquals(
-    //	new Class <?>[] {SparseVector.class, Integer.class, Integer.class},
-    //	TestUtils.getColumnDataTypes(trainDataTable));
-    //
-    // Als als = new Als().setWeightCol("weight");
-    // Table output = als.fit(trainDataTable).transform(trainDataTable)[0];
-    // verifyPredictionResult(
-    //	output, als.getLabelCol(), als.getPredictionCol());
-    // }
-
-    // @Test
-    // public void testSaveLoadAndPredict() throws Exception {
-    //	Als als = new Als().setWeightCol("weight");
-    //	als =
-    //		TestUtils.saveAndReload(
-    //			tEnv, als, tempFolder.newFolder().getAbsolutePath());
-    //	AlsModel model = als.fit(trainDataTable);
-    //	model = TestUtils.saveAndReload(tEnv, model, tempFolder.newFolder().getAbsolutePath());
-    //	assertEquals(
-    //		Collections.singletonList("coefficient"),
-    //		model.getModelData()[0].getResolvedSchema().getColumnNames());
-    //	Table output = model.transform(trainDataTable)[0];
-    //	verifyPredictionResult(
-    //		output, als.getLabelCol(), als.getPredictionCol());
-    // }
-    //
-    // @Test
-    // public void testGetModelData() throws Exception {
-    //	Als als = new Als().setWeightCol("weight");
-    //	AlsModel model = als.fit(trainDataTable);
-    //	List <AlsModelData> modelData =
-    //		IteratorUtils.toList(
-    //			AlsModelData.getModelDataStream(model.getModelData()[0])
-    //				.executeAndCollect());
-    //	assertNotNull(modelData);
-    //	assertEquals(1, modelData.size());
-    //	assertArrayEquals(
-    //		expectedCoefficient, modelData.get(0).coefficient.values, COEFFICIENT_TOLERANCE);
-    // }
-    //
-    // @Test
-    // public void testSetModelData() throws Exception {
-    //	Als als = new Als().setWeightCol("weight");
-    //	AlsModel model = als.fit(trainDataTable);
-    //
-    //	AlsModel newModel = new AlsModel();
-    //	ReadWriteUtils.updateExistingParams(newModel, model.getParamMap());
-    //	newModel.setModelData(model.getModelData());
-    //	Table output = newModel.transform(trainDataTable)[0];
-    //	verifyPredictionResult(
-    //		output, als.getLabelCol(), als.getPredictionCol());
-    // }
-
     @Test
-    public void test100() throws Exception {
-        for (int i = 0; i < 100; i++) {
-            testFitAndPredict();
-        }
+    public void testSaveLoadAndTransform() throws Exception {
+        Als als =
+                new Als()
+                    .setUserCol("user_id")
+                    .setItemCol("item_id")
+                    .setRatingCol("rating")
+                    .setNumUserBlocks(1)
+                    .setMaxIter(1)
+                    .setRank(10)
+                    .setAlpha(0.1)
+                    .setRegParam(0.1)
+                    .setSeed(0)
+                    .setImplicitPrefs(true)
+                    .setNonNegative(true)
+                    .setNumItemBlocks(1)
+                    .setPredictionCol("pred");
+        AlsModel model = als.fit(trainDataTable);
+        Table output = model.transform(testDataTable)[0];
+        verifyPredictionResult(output, als.getItemCol(), als.getPredictionCol());
+        AlsModel loadModel = TestUtils.saveAndReload(tEnv, model, tempFolder.newFolder().getAbsolutePath());
+
+        Table output1 = loadModel.transform(testDataTable)[0];
+        verifyPredictionResult(output1, als.getItemCol(), als.getPredictionCol());
     }
 }
