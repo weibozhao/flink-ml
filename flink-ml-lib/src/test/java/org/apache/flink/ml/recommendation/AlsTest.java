@@ -25,6 +25,7 @@ import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.recommendation.als.Als;
 import org.apache.flink.ml.recommendation.als.AlsModel;
+import org.apache.flink.ml.recommendation.als.AlsRating;
 import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -191,8 +192,8 @@ public class AlsTest extends AbstractTestBase {
     @Test
     public void testFitAndPredict() throws Exception {
         for (int i = 1; i < 2; ++i) {
-            Als als =
-                    new Als()
+            AlsRating als =
+                    new AlsRating()
                             .setUserCol("user_id")
                             .setItemCol("item_id")
                             .setRatingCol("rating")
@@ -215,23 +216,24 @@ public class AlsTest extends AbstractTestBase {
     public void testSaveLoadAndTransform() throws Exception {
         Als als =
                 new Als()
-                    .setUserCol("user_id")
-                    .setItemCol("item_id")
-                    .setRatingCol("rating")
-                    .setNumUserBlocks(1)
-                    .setMaxIter(1)
-                    .setRank(10)
-                    .setAlpha(0.1)
-                    .setRegParam(0.1)
-                    .setSeed(0)
-                    .setImplicitPrefs(true)
-                    .setNonNegative(true)
-                    .setNumItemBlocks(1)
-                    .setPredictionCol("pred");
+                        .setUserCol("user_id")
+                        .setItemCol("item_id")
+                        .setRatingCol("rating")
+                        .setNumUserBlocks(1)
+                        .setMaxIter(1)
+                        .setRank(10)
+                        .setAlpha(0.1)
+                        .setRegParam(0.1)
+                        .setSeed(0)
+                        .setImplicitPrefs(true)
+                        .setNonNegative(true)
+                        .setNumItemBlocks(1)
+                        .setPredictionCol("pred");
         AlsModel model = als.fit(trainDataTable);
         Table output = model.transform(testDataTable)[0];
         verifyPredictionResult(output, als.getItemCol(), als.getPredictionCol());
-        AlsModel loadModel = TestUtils.saveAndReload(tEnv, model, tempFolder.newFolder().getAbsolutePath());
+        AlsModel loadModel =
+                TestUtils.saveAndReload(tEnv, model, tempFolder.newFolder().getAbsolutePath());
 
         Table output1 = loadModel.transform(testDataTable)[0];
         verifyPredictionResult(output1, als.getItemCol(), als.getPredictionCol());
