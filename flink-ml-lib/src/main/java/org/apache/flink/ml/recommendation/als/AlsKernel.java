@@ -526,6 +526,12 @@ public class AlsKernel {
                                     transient int partitionId;
 
                                     @Override
+                                    public void open(Configuration parameters) throws Exception {
+                                        super.open(parameters);
+                                        partitionId = getRuntimeContext().getIndexOfThisSubtask();
+                                    }
+
+                                    @Override
                                     public Tuple2<Integer, Ratings> map(Ratings value) {
                                         return Tuple2.of(partitionId, value);
                                     }

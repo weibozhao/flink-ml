@@ -52,7 +52,7 @@ public class AlsRating implements Estimator<AlsRating, AlsModel>, AlsParams<AlsR
     public AlsModel fit(Table... inputs) {
         Table modelData = new AlsKernel(paramMap).fit(inputs[0]);
         AlsModel model = new AlsModel().setModelData(modelData);
-        ReadWriteUtils.updateExistingParams(model, paramMap);
+        ParamUtils.updateExistingParams(model, paramMap);
         return model;
     }
 
