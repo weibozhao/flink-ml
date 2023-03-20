@@ -225,6 +225,7 @@ public class IterationWithBroadcastTest {
         }
     }
 
+    /** */
     public static class TerminateOnMaxIter
             implements IterationListener<Integer>, FlatMapFunction<Object, Integer> {
 
