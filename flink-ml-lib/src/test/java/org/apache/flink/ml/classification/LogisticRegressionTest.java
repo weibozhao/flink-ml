@@ -25,12 +25,14 @@ import org.apache.flink.ml.classification.logisticregression.LogisticRegression;
 import org.apache.flink.ml.classification.logisticregression.LogisticRegressionModel;
 import org.apache.flink.ml.classification.logisticregression.LogisticRegressionModelData;
 import org.apache.flink.ml.classification.logisticregression.LogisticRegressionModelDataUtil;
+import org.apache.flink.ml.classification.logisticregression.LogisticRegressionModelParams;
 import org.apache.flink.ml.classification.logisticregression.LogisticRegressionModelServable;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.linalg.Vectors;
 import org.apache.flink.ml.linalg.typeinfo.DenseVectorTypeInfo;
+import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.servable.api.DataFrame;
 import org.apache.flink.ml.servable.types.BasicType;
 import org.apache.flink.ml.servable.types.DataTypes;
@@ -51,10 +53,13 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.apache.flink.ml.util.TestUtils.saveAndLoadServable;
 import static org.junit.Assert.assertArrayEquals;
@@ -368,6 +373,40 @@ public class LogisticRegressionTest extends AbstractTestBase {
                 servable.getFeaturesCol(),
                 servable.getPredictionCol(),
                 servable.getRawPredictionCol());
+    }
+
+    @Test
+    public void testModelRowsToServable() throws Exception {
+        DenseVector vec = new DenseVector(new double[] {1.0, 2.0, 1.0, 1.0});
+        LogisticRegressionModelData modelData = new LogisticRegressionModelData(vec, 1L);
+        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+        modelData.encode(outputStream);
+        LogisticRegressionModelServable servable = new LogisticRegressionModelServable();
+        Map<Param<?>, Object> paramMap = new HashMap<>();
+        paramMap.put(LogisticRegressionModelParams.PREDICTION_COL, "pred");
+        ParamUtils.updateExistingParams(servable, paramMap);
+        servable.setModelData(new ByteArrayInputStream(outputStream.toByteArray()));
+
+        binomialDataDataFrame =
+                TestUtils.constructDataFrame(
+                        new ArrayList<>(Arrays.asList("features", "label", "weight")),
+                        new ArrayList<>(
+                                Arrays.asList(
+                                        DataTypes.VECTOR(BasicType.DOUBLE),
+                                        DataTypes.DOUBLE,
+                                        DataTypes.DOUBLE)),
+                        binomialTrainData);
+
+        DataFrame output = servable.transform(binomialDataDataFrame);
+
+        int featuresColIndex = output.getIndex("features");
+        int predictionColIndex = output.getIndex("pred");
+
+        for (org.apache.flink.ml.servable.api.Row predictionRow : output.collect()) {
+            DenseVector feature = ((Vector) predictionRow.get(featuresColIndex)).toDense();
+            double prediction = (double) predictionRow.get(predictionColIndex);
+            System.out.println(feature + " " + prediction);
+        }
     }
 
     @Test

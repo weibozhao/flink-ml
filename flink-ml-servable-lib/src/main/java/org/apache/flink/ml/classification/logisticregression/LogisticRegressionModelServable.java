@@ -28,6 +28,7 @@ import org.apache.flink.ml.servable.api.DataFrame;
 import org.apache.flink.ml.servable.api.ModelServable;
 import org.apache.flink.ml.servable.api.Row;
 import org.apache.flink.ml.servable.types.BasicType;
+import org.apache.flink.ml.servable.types.DataType;
 import org.apache.flink.ml.servable.types.DataTypes;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ServableReadWriteUtils;
@@ -78,11 +79,26 @@ public class LogisticRegressionModelServable
         return input;
     }
 
+    @Override
+    public Tuple2<String[], DataType[]> getResultNamesAndTypes() {
+        return Tuple2.of(
+                new String[] {getPredictionCol(), getRawPredictionCol()},
+                new DataType[] {DataTypes.DOUBLE, DataTypes.VECTOR(BasicType.DOUBLE)});
+    }
+
+    @Override
     public LogisticRegressionModelServable setModelData(InputStream... modelDataInputs)
             throws IOException {
         Preconditions.checkArgument(modelDataInputs.length == 1);
 
         modelData = LogisticRegressionModelData.decode(modelDataInputs[0]);
+        return this;
+    }
+
+    @Override
+    public LogisticRegressionModelServable setModelData(List<Row> modelRows) throws IOException {
+        DenseVector vec = (DenseVector) modelRows.get(0).get(0);
+        modelData = new LogisticRegressionModelData(vec, 1L);
         return this;
     }
 

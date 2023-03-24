@@ -19,9 +19,12 @@
 package org.apache.flink.ml.servable.api;
 
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.ml.servable.types.DataType;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.List;
 
 /**
  * A ModelServable is a TransformerServable with the extra API to set model data.
@@ -33,6 +36,16 @@ public interface ModelServable<T extends ModelServable<T>> extends TransformerSe
 
     /** Sets model data using the serialized model data from the given input streams. */
     default T setModelData(InputStream... modelDataInputs) throws IOException {
+        throw new UnsupportedOperationException("This operation is not supported.");
+    }
+
+    /** Sets model data using the serialized model data from the given input rows. */
+    default T setModelData(List<Row> modelRows) throws IOException {
+        throw new UnsupportedOperationException("This operation is not supported.");
+    }
+
+    /** Gets result schema information. */
+    default Tuple2<String[], DataType[]> getResultNamesAndTypes() {
         throw new UnsupportedOperationException("This operation is not supported.");
     }
 }
