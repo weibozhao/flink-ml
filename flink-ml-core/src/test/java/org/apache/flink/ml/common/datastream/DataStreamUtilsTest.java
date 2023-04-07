@@ -19,10 +19,14 @@
 package org.apache.flink.ml.common.datastream;
 
 import org.apache.flink.api.common.functions.AggregateFunction;
+import org.apache.flink.api.common.functions.CoGroupFunction;
 import org.apache.flink.api.common.functions.MapPartitionFunction;
 import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.common.functions.RichMapPartitionFunction;
+import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.Types;
+import org.apache.flink.api.java.functions.KeySelector;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -33,6 +37,7 @@ import org.apache.commons.collections.IteratorUtils;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.Assert.assertArrayEquals;
@@ -57,6 +62,54 @@ public class DataStreamUtilsTest {
         List<Integer> counts = IteratorUtils.toList(countsPerPartition.executeAndCollect());
         assertArrayEquals(
                 new int[] {5, 5, 5, 5}, counts.stream().mapToInt(Integer::intValue).toArray());
+    }
+
+    @Test
+    public void testCoGroup() throws Exception {
+        DataStream<Tuple2<Integer, Integer>> data1 =
+                env.fromCollection(
+                        Arrays.asList(Tuple2.of(1, 1), Tuple2.of(2, 2), Tuple2.of(3, 3)));
+        DataStream<Tuple2<Integer, Double>> data2 =
+                env.fromCollection(
+                        Arrays.asList(
+                                Tuple2.of(1, 1.5),
+                                Tuple2.of(5, 5.5),
+                                Tuple2.of(3, 3.5),
+                                Tuple2.of(1, 2.5)));
+        DataStream<Double> result =
+                DataStreamUtils.coGroup(
+                        data1,
+                        data2,
+                        (KeySelector<Tuple2<Integer, Integer>, Integer>) tuple -> tuple.f0,
+                        (KeySelector<Tuple2<Integer, Double>, Integer>) tuple -> tuple.f0,
+                        BasicTypeInfo.DOUBLE_TYPE_INFO,
+                        new SumCoGroupFunction());
+
+        List<Double> resultValues = IteratorUtils.toList(result.executeAndCollect());
+        double[] resultPrimitiveValues =
+                resultValues.stream().mapToDouble(Double::doubleValue).toArray();
+        assertArrayEquals(new double[] {5.0, 2.0, 6.5, 5.5}, resultPrimitiveValues, 1e-5);
+    }
+
+    private static class SumCoGroupFunction
+            implements CoGroupFunction<Tuple2<Integer, Integer>, Tuple2<Integer, Double>, Double> {
+        @Override
+        public void coGroup(
+                Iterable<Tuple2<Integer, Integer>> iterableA,
+                Iterable<Tuple2<Integer, Double>> iterableB,
+                Collector<Double> collector) {
+            List<Tuple2<Integer, Integer>> valuesA = IteratorUtils.toList(iterableA.iterator());
+            List<Tuple2<Integer, Double>> valuesB = IteratorUtils.toList(iterableB.iterator());
+
+            double sum = 0;
+            for (Tuple2<Integer, Integer> value : valuesA) {
+                sum += value.f1;
+            }
+            for (Tuple2<Integer, Double> value : valuesB) {
+                sum += value.f1;
+            }
+            collector.collect(sum);
+        }
     }
 
     @Test
