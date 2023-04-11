@@ -120,21 +120,8 @@ public class CoGroupWithIterationTest {
                                         }
                                     },
                                     TypeInformation.of(Integer.class),
-                                    new RichCoGroupFunction<Long, Long, Integer>() {
-                                        @Override
-                                        public void coGroup(
-                                                Iterable<Long> iterable,
-                                                Iterable<Long> iterable1,
-                                                Collector<Integer> collector) {
-                                            collector.collect(
-                                                    Integer.valueOf(
-                                                            getRuntimeContext()
-                                                                    .getBroadcastVariable(
-                                                                            "broadcast")
-                                                                    .get(1)
-                                                                    .toString()));
-                                        }
-                                    });
+                                    new coFunc()
+                                    );
                         });
 
         List<Integer> counts = IteratorUtils.toList(coResult.executeAndCollect());
@@ -143,7 +130,21 @@ public class CoGroupWithIterationTest {
             assertEquals(1, count);
         }
     }
-
+    private static class coFunc extends RichCoGroupFunction<Long, Long, Integer> {
+        @Override
+        public void coGroup(
+            Iterable<Long> iterable,
+            Iterable<Long> iterable1,
+            Collector<Integer> collector) {
+            collector.collect(
+                Integer.valueOf(
+                    getRuntimeContext()
+                        .getBroadcastVariable(
+                            "broadcast")
+                        .get(1)
+                        .toString()));
+        }
+    }
     private static class TrainIterationBody implements IterationBody {
 
         @Override
@@ -186,44 +187,7 @@ public class CoGroupWithIterationTest {
                                                 new TupleTypeInfo<>(
                                                         Types.LONG,
                                                         TypeInformation.of(DenseVector.class)),
-                                                new RichCoGroupFunction<
-                                                        Tuple2<Long, DenseVector>,
-                                                        Tuple2<Long, DenseVector>,
-                                                        Tuple2<Long, DenseVector>>() {
-                                                    @Override
-                                                    public void coGroup(
-                                                            Iterable<Tuple2<Long, DenseVector>>
-                                                                    iterable,
-                                                            Iterable<Tuple2<Long, DenseVector>>
-                                                                    iterable1,
-                                                            Collector<Tuple2<Long, DenseVector>>
-                                                                    collector) {
-                                                        for (Tuple2<Long, DenseVector> iter :
-                                                                iterable) {
-                                                            if (iter == null) {
-                                                                continue;
-                                                            }
-                                                            collector.collect(iter);
-                                                            System.out.println(
-                                                                    getRuntimeContext()
-                                                                                    .getIndexOfThisSubtask()
-                                                                            + " "
-                                                                            + iter);
-                                                        }
-                                                        for (Tuple2<Long, DenseVector> iter :
-                                                                iterable1) {
-                                                            if (iter == null) {
-                                                                continue;
-                                                            }
-                                                            System.out.println(
-                                                                    getRuntimeContext()
-                                                                                    .getIndexOfThisSubtask()
-                                                                            + " "
-                                                                            + iter);
-                                                            collector.collect(iter);
-                                                        }
-                                                    }
-                                                });
+                                                new coFunc1());
                                 return DataStreamList.of(
                                         coResult.filter(
                                                 (FilterFunction<Tuple2<Long, DenseVector>>)
@@ -245,7 +209,44 @@ public class CoGroupWithIterationTest {
                     feedbackVariableStream, variableStreams, terminationCriteria);
         }
     }
-
+    private static class coFunc1 extends RichCoGroupFunction<
+    Tuple2<Long, DenseVector>,
+    Tuple2<Long, DenseVector>,
+    Tuple2<Long, DenseVector>> {
+        @Override
+        public void coGroup(
+            Iterable<Tuple2<Long, DenseVector>>
+            iterable,
+            Iterable<Tuple2<Long, DenseVector>>
+            iterable1,
+            Collector<Tuple2<Long, DenseVector>>
+            collector) {
+            for (Tuple2<Long, DenseVector> iter :
+                iterable) {
+                if (iter == null) {
+                    continue;
+                }
+                collector.collect(iter);
+                System.out.println(
+                    getRuntimeContext()
+                        .getIndexOfThisSubtask()
+                        + " "
+                        + iter);
+            }
+            for (Tuple2<Long, DenseVector> iter :
+                iterable1) {
+                if (iter == null) {
+                    continue;
+                }
+                System.out.println(
+                    getRuntimeContext()
+                        .getIndexOfThisSubtask()
+                        + " "
+                        + iter);
+                collector.collect(iter);
+            }
+        }
+    }
     @Test
     public void testCoGroupWithIteration() throws Exception {
         DataStream<Long> broadcast =

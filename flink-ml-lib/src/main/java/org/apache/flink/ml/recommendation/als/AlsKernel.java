@@ -615,73 +615,8 @@ public class AlsKernel {
                              }
                          },
                          new TupleTypeInfo<>(Types.INT, TypeInformation.of(Factors.class)),
-                         new RichCoGroupFunction<
-                                        Tuple3<Integer, Byte, Long>,
-                                        Factors,
-                                        Tuple2<Integer, Factors>>() {
-
-                                    private transient int[] flag = null;
-                                    private transient int[] partitionsIds = null;
-
-                                    @Override
-                                    public void open(Configuration parameters) {
-                                        int numTasks =
-                                                getRuntimeContext().getNumberOfParallelSubtasks();
-                                        flag = new int[numTasks];
-                                        partitionsIds = new int[numTasks];
-                                    }
-
-                                    @Override
-                                    public void close() {
-                                        flag = null;
-                                        partitionsIds = null;
-                                    }
-
-                                    @Override
-                                    public void coGroup(
-                                            Iterable<Tuple3<Integer, Byte, Long>> request,
-                                            Iterable<Factors> factorsStore,
-                                            Collector<Tuple2<Integer, Factors>> out) {
-
-                                        if (!request.iterator().hasNext()
-                                                || !factorsStore.iterator().hasNext()) {
-                                            return;
-                                        }
-
-                                        int numRequests = 0;
-                                        byte targetIdentity = -1;
-                                        long targetNodeId = Long.MIN_VALUE;
-                                        int numPartitionsIds = 0;
-                                        Arrays.fill(flag, 0);
-
-                                        /* loop over request: srcBlockId, targetIdentity, targetNodeId*/
-                                        for (Tuple3<Integer, Byte, Long> t3 : request) {
-                                            numRequests++;
-                                            targetIdentity = t3.f1;
-                                            targetNodeId = t3.f2;
-                                            int partId = t3.f0;
-
-                                            if (flag[partId] == 0) {
-                                                partitionsIds[numPartitionsIds++] = partId;
-                                                flag[partId] = 1;
-                                            }
-                                        }
-
-                                        if (numRequests == 0) {
-                                            return;
-                                        }
-
-                                        for (Factors factors : factorsStore) {
-                                            assert (factors.identity == targetIdentity
-                                                    && factors.nodeId == targetNodeId);
-
-                                            for (int i = 0; i < numPartitionsIds; i++) {
-                                                int b = partitionsIds[i];
-                                                out.collect(Tuple2.of(b, factors));
-                                            }
-                                        }
-                                    }
-                                });
+                         new generateResponseFunc()
+                       );
 
         /* Repartition of the data is to improve the performance of coGroup. */
         miniBatch = miniBatch.partitionCustom((chunkId, numPartitions) -> chunkId, x -> x.f0);
@@ -771,6 +706,74 @@ public class AlsKernel {
                                     }
                                 });
         return Tuple2.of(factors, newYty);
+    }
+
+    private static class generateResponseFunc extends RichCoGroupFunction<
+          Tuple3<Integer, Byte, Long>,
+          Factors,
+          Tuple2<Integer, Factors>> {
+
+        private transient int[] flag = null;
+        private transient int[] partitionsIds = null;
+
+        @Override
+        public void open(Configuration parameters) {
+            int numTasks =
+                getRuntimeContext().getNumberOfParallelSubtasks();
+            flag = new int[numTasks];
+            partitionsIds = new int[numTasks];
+        }
+
+        @Override
+        public void close() {
+            flag = null;
+            partitionsIds = null;
+        }
+
+        @Override
+        public void coGroup(
+            Iterable<Tuple3<Integer, Byte, Long>> request,
+            Iterable<Factors> factorsStore,
+            Collector<Tuple2<Integer, Factors>> out) {
+
+            if (!request.iterator().hasNext()
+                || !factorsStore.iterator().hasNext()) {
+                return;
+            }
+
+            int numRequests = 0;
+            byte targetIdentity = -1;
+            long targetNodeId = Long.MIN_VALUE;
+            int numPartitionsIds = 0;
+            Arrays.fill(flag, 0);
+
+            /* loop over request: srcBlockId, targetIdentity, targetNodeId*/
+            for (Tuple3<Integer, Byte, Long> t3 : request) {
+                numRequests++;
+                targetIdentity = t3.f1;
+                targetNodeId = t3.f2;
+                int partId = t3.f0;
+
+                if (flag[partId] == 0) {
+                    partitionsIds[numPartitionsIds++] = partId;
+                    flag[partId] = 1;
+                }
+            }
+
+            if (numRequests == 0) {
+                return;
+            }
+
+            for (Factors factors : factorsStore) {
+                assert (factors.identity == targetIdentity
+                    && factors.nodeId == targetNodeId);
+
+                for (int i = 0; i < numPartitionsIds; i++) {
+                    int b = partitionsIds[i];
+                    out.collect(Tuple2.of(b, factors));
+                }
+            }
+        }
     }
 
     private static class IterationControllerFunc
