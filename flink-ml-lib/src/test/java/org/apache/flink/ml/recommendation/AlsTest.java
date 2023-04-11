@@ -26,6 +26,10 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.recommendation.als.Als;
 import org.apache.flink.ml.recommendation.als.AlsModel;
 import org.apache.flink.ml.recommendation.als.AlsRating;
+<<<<<<< HEAD
+=======
+import org.apache.flink.ml.util.TestUtils;
+>>>>>>> 0bd4ddcc89adc17745f4ddc1c05613198ab7899d
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Table;
@@ -78,7 +82,11 @@ public class AlsTest extends AbstractTestBase {
         config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
         env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         // env.getConfig().enableObjectReuse();
+<<<<<<< HEAD
         env.setParallelism(4);
+=======
+        env.setParallelism(1);
+>>>>>>> 0bd4ddcc89adc17745f4ddc1c05613198ab7899d
         // env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         // env.setStateBackend(new EmbeddedRocksDBStateBackend());
         env.getCheckpointConfig().disableCheckpointing(); //
@@ -90,7 +98,14 @@ public class AlsTest extends AbstractTestBase {
         List<Row> trainData = new ArrayList<>();
         for (int i = 0; i < 20000; ++i) {
             trainData.add(
+<<<<<<< HEAD
                     Row.of((long) rand.nextInt(500), (long) rand.nextInt(200), rand.nextDouble()));
+=======
+                    Row.of(
+                            (long) rand.nextInt(500),
+                            (long) rand.nextInt(200),
+                            rand.nextDouble()));
+>>>>>>> 0bd4ddcc89adc17745f4ddc1c05613198ab7899d
         }
 
         Collections.shuffle(trainData);
@@ -152,7 +167,11 @@ public class AlsTest extends AbstractTestBase {
                 .setAlpha(0.001)
                 .setRegParam(0.5)
                 .setRank(100)
+<<<<<<< HEAD
                 .setImplicitPrefs(true)
+=======
+                .setImplicitPrefs(false)
+>>>>>>> 0bd4ddcc89adc17745f4ddc1c05613198ab7899d
                 .setNonNegative(true)
                 .setMaxIter(1000)
                 .setNumUserBlocks(5)
@@ -264,10 +283,18 @@ public class AlsTest extends AbstractTestBase {
         AlsModel model = als.fit(trainDataTable);
         Table output = model.transform(testDataTable)[0];
         verifyPredictionResult(output, als.getItemCol(), als.getPredictionCol());
+<<<<<<< HEAD
         // AlsModel loadModel =
         //        TestUtils.saveAndReload(tEnv, model, tempFolder.newFolder().getAbsolutePath());
 
         // Table output1 = loadModel.transform(testDataTable)[0];
         // verifyPredictionResult(output1, als.getItemCol(), als.getPredictionCol());
+=======
+        //AlsModel loadModel =
+        //        TestUtils.saveAndReload(tEnv, model, tempFolder.newFolder().getAbsolutePath());
+
+        //Table output1 = loadModel.transform(testDataTable)[0];
+        //verifyPredictionResult(output1, als.getItemCol(), als.getPredictionCol());
+>>>>>>> 0bd4ddcc89adc17745f4ddc1c05613198ab7899d
     }
 }

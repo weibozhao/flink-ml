@@ -67,6 +67,10 @@ import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.OutputTag;
 
+<<<<<<< HEAD
+=======
+import java.io.Serializable;
+>>>>>>> 0bd4ddcc89adc17745f4ddc1c05613198ab7899d
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -526,12 +530,15 @@ public class AlsKernel {
                                     transient int partitionId;
 
                                     @Override
+<<<<<<< HEAD
                                     public void open(Configuration parameters) throws Exception {
                                         super.open(parameters);
                                         partitionId = getRuntimeContext().getIndexOfThisSubtask();
                                     }
 
                                     @Override
+=======
+>>>>>>> 0bd4ddcc89adc17745f4ddc1c05613198ab7899d
                                     public Tuple2<Integer, Ratings> map(Ratings value) {
                                         return Tuple2.of(partitionId, value);
                                     }
@@ -598,6 +605,7 @@ public class AlsKernel {
 
         /* Generates the response information, which will be used to update the factors. */
         DataStream<Tuple2<Integer, Factors>> response =
+<<<<<<< HEAD
                 request.coGroup(userOrItemFactors)
                         .where(
                                 (KeySelector<Tuple3<Integer, Byte, Long>, String>)
@@ -608,6 +616,26 @@ public class AlsKernel {
                         .window(EndOfStreamWindows.get())
                         .apply(
                                 new RichCoGroupFunction<
+=======
+                     DataStreamUtils.coGroup(
+                         request,
+                         userOrItemFactors,
+                         new KeySelector <Tuple3 <Integer, Byte, Long>, Serializable>() {
+                             @Override
+                             public Serializable getKey(Tuple3 <Integer, Byte, Long> value)
+                                 throws Exception {
+                                 return value.f1.toString() + value.f2;
+                             }
+                         },
+                         new KeySelector <Factors, Serializable>() {
+                             @Override
+                             public Serializable getKey(Factors value) throws Exception {
+                                 return String.valueOf(value.identity) + value.nodeId;
+                             }
+                         },
+                         new TupleTypeInfo<>(Types.INT, TypeInformation.of(Factors.class)),
+                         new RichCoGroupFunction<
+>>>>>>> 0bd4ddcc89adc17745f4ddc1c05613198ab7899d
                                         Tuple3<Integer, Byte, Long>,
                                         Factors,
                                         Tuple2<Integer, Factors>>() {

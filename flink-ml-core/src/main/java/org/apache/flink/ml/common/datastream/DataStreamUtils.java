@@ -39,6 +39,7 @@ import org.apache.flink.api.java.typeutils.TypeExtractor;
 import org.apache.flink.core.memory.ManagedMemoryUseCase;
 import org.apache.flink.iteration.datacache.nonkeyed.ListStateWithCache;
 import org.apache.flink.iteration.operator.OperatorStateUtils;
+
 import org.apache.flink.ml.common.datastream.sort.CoGroupOperator;
 import org.apache.flink.ml.common.window.CountTumblingWindows;
 import org.apache.flink.ml.common.window.EventTimeSessionWindows;
