@@ -67,10 +67,7 @@ import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.OutputTag;
 
-<<<<<<< HEAD
-=======
 import java.io.Serializable;
->>>>>>> 0bd4ddcc89adc17745f4ddc1c05613198ab7899d
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -529,16 +526,12 @@ public class AlsKernel {
                                 new RichMapFunction<Ratings, Tuple2<Integer, Ratings>>() {
                                     transient int partitionId;
 
-                                    @Override
-<<<<<<< HEAD
                                     public void open(Configuration parameters) throws Exception {
                                         super.open(parameters);
                                         partitionId = getRuntimeContext().getIndexOfThisSubtask();
                                     }
 
                                     @Override
-=======
->>>>>>> 0bd4ddcc89adc17745f4ddc1c05613198ab7899d
                                     public Tuple2<Integer, Ratings> map(Ratings value) {
                                         return Tuple2.of(partitionId, value);
                                     }
@@ -605,18 +598,6 @@ public class AlsKernel {
 
         /* Generates the response information, which will be used to update the factors. */
         DataStream<Tuple2<Integer, Factors>> response =
-<<<<<<< HEAD
-                request.coGroup(userOrItemFactors)
-                        .where(
-                                (KeySelector<Tuple3<Integer, Byte, Long>, String>)
-                                        value -> value.f1.toString() + value.f2)
-                        .equalTo(
-                                (KeySelector<Factors, String>)
-                                        value -> String.valueOf(value.identity) + value.nodeId)
-                        .window(EndOfStreamWindows.get())
-                        .apply(
-                                new RichCoGroupFunction<
-=======
                      DataStreamUtils.coGroup(
                          request,
                          userOrItemFactors,
@@ -635,7 +616,6 @@ public class AlsKernel {
                          },
                          new TupleTypeInfo<>(Types.INT, TypeInformation.of(Factors.class)),
                          new RichCoGroupFunction<
->>>>>>> 0bd4ddcc89adc17745f4ddc1c05613198ab7899d
                                         Tuple3<Integer, Byte, Long>,
                                         Factors,
                                         Tuple2<Integer, Factors>>() {
