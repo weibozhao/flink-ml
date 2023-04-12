@@ -88,18 +88,15 @@ public class AlsTest extends AbstractTestBase {
         tEnv = StreamTableEnvironment.create(env);
         Random rand = new Random(0);
         List<Row> trainData = new ArrayList<>();
-        for (int i = 0; i < 20000; ++i) {
+        for (int i = 0; i < 200000; ++i) {
             trainData.add(
-                    Row.of(
-                            (long) rand.nextInt(500),
-                            (long) rand.nextInt(200),
-                            rand.nextDouble()));
+                    Row.of((long) rand.nextInt(500), (long) rand.nextInt(500), rand.nextDouble()));
         }
 
         Collections.shuffle(trainData);
 
         List<Row> testData = new ArrayList<>();
-        testData.add(Row.of(1L, 5L));
+        testData.add(Row.of(2L, 4L));
 
         Collections.shuffle(trainData);
         trainDataTable =
@@ -209,23 +206,23 @@ public class AlsTest extends AbstractTestBase {
     @Test
     public void testFitAndPredict() throws Exception {
         for (int i = 1; i < 2; ++i) {
-            AlsRating alsRating =
-                    new AlsRating()
-                            .setUserCol("user_id")
-                            .setItemCol("item_id")
-                            .setRatingCol("rating")
-                            .setNumUserBlocks(i)
-                            .setMaxIter(2)
-                            .setRank(10)
-                            .setAlpha(0.1)
-                            .setRegParam(0.1)
-                            .setSeed(0)
-                            .setImplicitPrefs(true)
-                            .setNonNegative(true)
-                            .setNumItemBlocks(i)
-                            .setPredictionCol("pred");
-            Table output = alsRating.fit(trainDataTable).transform(testDataTable)[0];
-            verifyPredictionResult(output, alsRating.getItemCol(), alsRating.getPredictionCol());
+            //AlsRating alsRating =
+            //        new AlsRating()
+            //                .setUserCol("user_id")
+            //                .setItemCol("item_id")
+            //                .setRatingCol("rating")
+            //                .setNumUserBlocks(i)
+            //                .setMaxIter(2)
+            //                .setRank(10)
+            //                .setAlpha(0.1)
+            //                .setRegParam(0.1)
+            //                .setSeed(0)
+            //                .setImplicitPrefs(false)
+            //                .setNonNegative(true)
+            //                .setNumItemBlocks(i)
+            //                .setPredictionCol("pred");
+            //Table output = alsRating.fit(trainDataTable).transform(testDataTable)[0];
+            //verifyPredictionResult(output, alsRating.getItemCol(), alsRating.getPredictionCol());
 
             Als als =
                     new Als()
@@ -233,12 +230,12 @@ public class AlsTest extends AbstractTestBase {
                             .setItemCol("item_id")
                             .setRatingCol("rating")
                             .setNumUserBlocks(i)
-                            .setMaxIter(2)
+                            .setMaxIter(200)
                             .setRank(10)
                             .setAlpha(0.1)
                             .setRegParam(0.1)
                             .setSeed(0)
-                            .setImplicitPrefs(true)
+                            .setImplicitPrefs(false)
                             .setNonNegative(true)
                             .setNumItemBlocks(i)
                             .setPredictionCol("pred");

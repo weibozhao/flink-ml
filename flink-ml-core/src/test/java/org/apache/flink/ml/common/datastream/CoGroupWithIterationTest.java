@@ -19,7 +19,6 @@
 package org.apache.flink.ml.common.datastream;
 
 import org.apache.flink.api.common.functions.FilterFunction;
-import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.RichCoGroupFunction;
 import org.apache.flink.api.common.functions.RichReduceFunction;
@@ -35,10 +34,11 @@ import org.apache.flink.iteration.DataStreamList;
 import org.apache.flink.iteration.IterationBody;
 import org.apache.flink.iteration.IterationBodyResult;
 import org.apache.flink.iteration.IterationConfig;
-import org.apache.flink.iteration.IterationListener;
+import org.apache.flink.iteration.IterationConfig.OperatorLifeCycle;
 import org.apache.flink.iteration.Iterations;
 import org.apache.flink.iteration.ReplayableDataStreamList;
 import org.apache.flink.ml.common.broadcast.BroadcastUtils;
+import org.apache.flink.ml.common.iteration.TerminateOnMaxIter;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.KeyedStream;
@@ -90,9 +90,9 @@ public class CoGroupWithIterationTest {
                                     }
                                 });
         DataStream<Long> dataStream1 =
-                env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
+                env.fromParallelCollection(new NumberSequenceIterator(0L, 500L), Types.LONG);
         DataStream<Long> dataStream2 =
-                env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
+                env.fromParallelCollection(new NumberSequenceIterator(0L, 500L), Types.LONG);
 
         DataStream<Integer> coResult =
                 BroadcastUtils.withBroadcastStream(
@@ -109,42 +109,51 @@ public class CoGroupWithIterationTest {
 
                                         @Override
                                         public Long getKey(Long aLong) throws Exception {
-                                            return aLong;
+                                            return aLong % 5;
                                         }
                                     },
                                     new KeySelector<Long, Long>() {
 
                                         @Override
                                         public Long getKey(Long aLong) throws Exception {
-                                            return aLong;
+                                            return aLong % 5;
                                         }
                                     },
                                     TypeInformation.of(Integer.class),
-                                    new coFunc()
-                                    );
+                                    new CoFunc());
                         });
 
         List<Integer> counts = IteratorUtils.toList(coResult.executeAndCollect());
-        assertEquals(6, counts.size());
+        assertEquals(5, counts.size());
         for (int count : counts) {
             assertEquals(1, count);
         }
     }
-    private static class coFunc extends RichCoGroupFunction<Long, Long, Integer> {
+
+    private static class CoFunc extends RichCoGroupFunction<Long, Long, Integer> {
         @Override
         public void coGroup(
-            Iterable<Long> iterable,
-            Iterable<Long> iterable1,
-            Collector<Integer> collector) {
+                Iterable<Long> iterable, Iterable<Long> iterable1, Collector<Integer> collector) {
+            long sum = 0;
+            long key = 0;
+            for (Long l : iterable) {
+                sum += l;
+                key = l;
+            }
+            for (Long l : iterable1) {
+                sum += l;
+            }
+            System.out.println(sum + " " + key);
+
             collector.collect(
-                Integer.valueOf(
-                    getRuntimeContext()
-                        .getBroadcastVariable(
-                            "broadcast")
-                        .get(1)
-                        .toString()));
+                    Integer.valueOf(
+                            getRuntimeContext()
+                                    .getBroadcastVariable("broadcast")
+                                    .get(1)
+                                    .toString()));
         }
     }
+
     private static class TrainIterationBody implements IterationBody {
 
         @Override
@@ -187,7 +196,7 @@ public class CoGroupWithIterationTest {
                                                 new TupleTypeInfo<>(
                                                         Types.LONG,
                                                         TypeInformation.of(DenseVector.class)),
-                                                new coFunc1());
+                                                new CoFunc1());
                                 return DataStreamList.of(
                                         coResult.filter(
                                                 (FilterFunction<Tuple2<Long, DenseVector>>)
@@ -202,51 +211,41 @@ public class CoGroupWithIterationTest {
             DataStream<Integer> terminationCriteria =
                     feedbackVariableStream
                             .get(0)
-                            .flatMap(new TerminateOnMaxIter2(2))
+                            .flatMap(new TerminateOnMaxIter(12))
                             .returns(Types.INT);
 
             return new IterationBodyResult(
                     feedbackVariableStream, variableStreams, terminationCriteria);
         }
     }
-    private static class coFunc1 extends RichCoGroupFunction<
-    Tuple2<Long, DenseVector>,
-    Tuple2<Long, DenseVector>,
-    Tuple2<Long, DenseVector>> {
+
+    private static class CoFunc1
+            extends RichCoGroupFunction<
+                    Tuple2<Long, DenseVector>,
+                    Tuple2<Long, DenseVector>,
+                    Tuple2<Long, DenseVector>> {
         @Override
         public void coGroup(
-            Iterable<Tuple2<Long, DenseVector>>
-            iterable,
-            Iterable<Tuple2<Long, DenseVector>>
-            iterable1,
-            Collector<Tuple2<Long, DenseVector>>
-            collector) {
-            for (Tuple2<Long, DenseVector> iter :
-                iterable) {
+                Iterable<Tuple2<Long, DenseVector>> iterable,
+                Iterable<Tuple2<Long, DenseVector>> iterable1,
+                Collector<Tuple2<Long, DenseVector>> collector) {
+            for (Tuple2<Long, DenseVector> iter : iterable) {
                 if (iter == null) {
                     continue;
                 }
                 collector.collect(iter);
-                System.out.println(
-                    getRuntimeContext()
-                        .getIndexOfThisSubtask()
-                        + " "
-                        + iter);
+                System.out.println(getRuntimeContext().getIndexOfThisSubtask() + " " + iter);
             }
-            for (Tuple2<Long, DenseVector> iter :
-                iterable1) {
+            for (Tuple2<Long, DenseVector> iter : iterable1) {
                 if (iter == null) {
                     continue;
                 }
-                System.out.println(
-                    getRuntimeContext()
-                        .getIndexOfThisSubtask()
-                        + " "
-                        + iter);
+                System.out.println(getRuntimeContext().getIndexOfThisSubtask() + " " + iter);
                 collector.collect(iter);
             }
         }
     }
+
     @Test
     public void testCoGroupWithIteration() throws Exception {
         DataStream<Long> broadcast =
@@ -287,37 +286,13 @@ public class CoGroupWithIterationTest {
                 Iterations.iterateBoundedStreamsUntilTermination(
                         DataStreamList.of(dataStream1, dataStream2),
                         ReplayableDataStreamList.notReplay(broadcast),
-                        IterationConfig.newBuilder().build(),
+                        IterationConfig.newBuilder()
+                                .setOperatorLifeCycle(OperatorLifeCycle.PER_ROUND)
+                                .build(),
                         new TrainIterationBody());
 
         List<Integer> counts = IteratorUtils.toList(coResult.get(0).executeAndCollect());
         System.out.println(counts.size());
-    }
-
-    /* */
-    public static class TerminateOnMaxIter2
-            implements IterationListener<Integer>, FlatMapFunction<Object, Integer> {
-
-        private final int maxIter;
-
-        public TerminateOnMaxIter2(Integer maxIter) {
-            this.maxIter = maxIter;
-        }
-
-        @Override
-        public void flatMap(Object value, Collector<Integer> out) {}
-
-        @Override
-        public void onEpochWatermarkIncremented(
-                int epochWatermark, Context context, Collector<Integer> collector) {
-            System.out.println("epoch watermark is: " + epochWatermark);
-            if ((epochWatermark + 1) < maxIter) {
-                collector.collect(0);
-            }
-        }
-
-        @Override
-        public void onIterationTerminated(Context context, Collector<Integer> collector) {}
     }
 
     @Test

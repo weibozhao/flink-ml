@@ -90,9 +90,9 @@ public class CoGroupTest {
                                     }
                                 });
         DataStream<Long> dataStream1 =
-                env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
+                env.fromParallelCollection(new NumberSequenceIterator(0L, 500L), Types.LONG);
         DataStream<Long> dataStream2 =
-                env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG);
+                env.fromParallelCollection(new NumberSequenceIterator(0L, 500L), Types.LONG);
 
         DataStream<Integer> coResult =
                 BroadcastUtils.withBroadcastStream(
@@ -103,8 +103,8 @@ public class CoGroupTest {
                             DataStream<Long> data2 = (DataStream<Long>) inputList.get(1);
 
                             return data1.coGroup(data2)
-                                    .where((KeySelector<Long, Long>) aLong -> aLong)
-                                    .equalTo((KeySelector<Long, Long>) aLong -> aLong)
+                                    .where(aLong -> String.valueOf(aLong % 6))
+                                    .equalTo(aLong -> String.valueOf(aLong % 6))
                                     .window(EndOfStreamWindows.get())
                                     .apply(
                                             new RichCoGroupFunction<Long, Long, Integer>() {
@@ -113,6 +113,16 @@ public class CoGroupTest {
                                                         Iterable<Long> iterable,
                                                         Iterable<Long> iterable1,
                                                         Collector<Integer> collector) {
+                                                    long sum = 0;
+                                                    long key = 0;
+                                                    for (Long l : iterable) {
+                                                        sum += l;
+                                                        key = l;
+                                                    }
+                                                    for (Long l : iterable1) {
+                                                        sum += l;
+                                                    }
+                                                    System.out.println(sum + " " + key);
                                                     collector.collect(
                                                             Integer.valueOf(
                                                                     getRuntimeContext()

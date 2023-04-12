@@ -18,18 +18,21 @@
 
 package org.apache.flink.iteration.operator;
 
+import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.iteration.IterationID;
 import org.apache.flink.iteration.config.IterationOptions;
 import org.apache.flink.iteration.proxy.ProxyKeySelector;
+import org.apache.flink.iteration.typeinfo.IterationRecordSerializer;
 import org.apache.flink.iteration.utils.ReflectionUtils;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.statefun.flink.core.feedback.FeedbackChannel;
 import org.apache.flink.statefun.flink.core.feedback.FeedbackConsumer;
 import org.apache.flink.statefun.flink.core.feedback.FeedbackKey;
 import org.apache.flink.streaming.api.graph.StreamConfig;
+import org.apache.flink.streaming.api.graph.StreamConfig.NetworkInputConfig;
 import org.apache.flink.streaming.api.operators.AbstractUdfStreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.util.ExceptionUtils;
@@ -103,7 +106,23 @@ public class OperatorUtils {
                         i, ((ProxyKeySelector) keySelector).getWrappedKeySelector());
             }
         }
+        StreamConfig.InputConfig[] inputs = wrapperConfig.getInputs(cl);
+        for (int i = 0; i < inputs.length; ++i) {
+            if (inputs[i] instanceof NetworkInputConfig) {
+                TypeSerializer<?> typeSerializerIn =
+                        ((NetworkInputConfig) inputs[i]).getTypeSerializer();
+                inputs[i] =
+                        new NetworkInputConfig(
+                                ((IterationRecordSerializer<?>) typeSerializerIn)
+                                        .getInnerSerializer(),
+                                i);
+            }
+        }
+        wrappedConfig.setInputs(inputs);
 
+        TypeSerializer<?> typeSerializerOut = wrapperConfig.getTypeSerializerOut(cl);
+        wrappedConfig.setTypeSerializerOut(
+                ((IterationRecordSerializer<?>) typeSerializerOut).getInnerSerializer());
         return wrappedConfig;
     }
 

@@ -67,7 +67,6 @@ import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.OutputTag;
 
-import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -90,7 +89,7 @@ import java.util.Random;
  * Filtering for Implicit Feedback Datasets, 2008".
  */
 public class AlsKernel {
-    private Map<Param<?>, Object> paramMap;
+    private final Map<Param<?>, Object> paramMap;
 
     public AlsKernel(Map<Param<?>, Object> paramMap) {
         this.paramMap = paramMap;
@@ -598,28 +597,20 @@ public class AlsKernel {
 
         /* Generates the response information, which will be used to update the factors. */
         DataStream<Tuple2<Integer, Factors>> response =
-                     DataStreamUtils.coGroup(
-                         request,
-                         userOrItemFactors,
-                         new KeySelector <Tuple3 <Integer, Byte, Long>, Serializable>() {
-                             @Override
-                             public Serializable getKey(Tuple3 <Integer, Byte, Long> value)
-                                 throws Exception {
-                                 return value.f1.toString() + value.f2;
-                             }
-                         },
-                         new KeySelector <Factors, Serializable>() {
-                             @Override
-                             public Serializable getKey(Factors value) throws Exception {
-                                 return String.valueOf(value.identity) + value.nodeId;
-                             }
-                         },
-                         new TupleTypeInfo<>(Types.INT, TypeInformation.of(Factors.class)),
-                         new generateResponseFunc()
-                       );
-
+                // DataStreamUtils.coGroup(
+                //    request,
+                //    userOrItemFactors,
+                //    value -> String.valueOf(value.f1) + value.f2,
+                //    value -> String.valueOf(value.identity) + value.nodeId,
+                //    new TupleTypeInfo<>(Types.INT, TypeInformation.of(Factors.class)),
+                //    new generateResponseFunc()
+                //  );
+                request.coGroup(userOrItemFactors)
+                        .where(value -> value.f1.toString() + value.f2)
+                        .equalTo(value -> String.valueOf(value.identity) + value.nodeId)
+                        .window(EndOfStreamWindows.get())
+                        .apply(new GenerateResponseFunc());
         /* Repartition of the data is to improve the performance of coGroup. */
-        miniBatch = miniBatch.partitionCustom((chunkId, numPartitions) -> chunkId, x -> x.f0);
         response = response.partitionCustom((chunkId, numPartitions) -> chunkId, x -> x.f0);
         DataStream<Factors> updatedFactors;
 
@@ -708,18 +699,16 @@ public class AlsKernel {
         return Tuple2.of(factors, newYty);
     }
 
-    private static class generateResponseFunc extends RichCoGroupFunction<
-          Tuple3<Integer, Byte, Long>,
-          Factors,
-          Tuple2<Integer, Factors>> {
+    private static class GenerateResponseFunc
+            extends RichCoGroupFunction<
+                    Tuple3<Integer, Byte, Long>, Factors, Tuple2<Integer, Factors>> {
 
         private transient int[] flag = null;
         private transient int[] partitionsIds = null;
 
         @Override
         public void open(Configuration parameters) {
-            int numTasks =
-                getRuntimeContext().getNumberOfParallelSubtasks();
+            int numTasks = getRuntimeContext().getNumberOfParallelSubtasks();
             flag = new int[numTasks];
             partitionsIds = new int[numTasks];
         }
@@ -732,15 +721,14 @@ public class AlsKernel {
 
         @Override
         public void coGroup(
-            Iterable<Tuple3<Integer, Byte, Long>> request,
-            Iterable<Factors> factorsStore,
-            Collector<Tuple2<Integer, Factors>> out) {
-
-            if (!request.iterator().hasNext()
-                || !factorsStore.iterator().hasNext()) {
+                Iterable<Tuple3<Integer, Byte, Long>> request,
+                Iterable<Factors> factorsStore,
+                Collector<Tuple2<Integer, Factors>> out) {
+            Iterator<Factors> factorsIterator = factorsStore.iterator();
+            Iterator<Tuple3<Integer, Byte, Long>> tuple3Iterator = request.iterator();
+            if (!tuple3Iterator.hasNext() || !factorsIterator.hasNext()) {
                 return;
             }
-
             int numRequests = 0;
             byte targetIdentity = -1;
             long targetNodeId = Long.MIN_VALUE;
@@ -748,12 +736,12 @@ public class AlsKernel {
             Arrays.fill(flag, 0);
 
             /* loop over request: srcBlockId, targetIdentity, targetNodeId*/
-            for (Tuple3<Integer, Byte, Long> t3 : request) {
+            while (tuple3Iterator.hasNext()) {
+                Tuple3<Integer, Byte, Long> t3 = tuple3Iterator.next();
                 numRequests++;
                 targetIdentity = t3.f1;
                 targetNodeId = t3.f2;
                 int partId = t3.f0;
-
                 if (flag[partId] == 0) {
                     partitionsIds[numPartitionsIds++] = partId;
                     flag[partId] = 1;
@@ -763,10 +751,10 @@ public class AlsKernel {
             if (numRequests == 0) {
                 return;
             }
+            while (factorsIterator.hasNext()) {
+                Factors factors = factorsIterator.next();
 
-            for (Factors factors : factorsStore) {
-                assert (factors.identity == targetIdentity
-                    && factors.nodeId == targetNodeId);
+                assert (factors.identity == targetIdentity && factors.nodeId == targetNodeId);
 
                 for (int i = 0; i < numPartitionsIds; i++) {
                     int b = partitionsIds[i];
@@ -888,7 +876,6 @@ public class AlsKernel {
                     for (int i = 0; i < nb.length; i++) {
                         long index = nb[i];
                         Integer pos = index2pos.get(index);
-
                         cachedFactors.get(pos).f1.getFactorsAsDoubleArray(buffer.values);
                         ls.add(buffer, rating[i], 1.0);
                     }
