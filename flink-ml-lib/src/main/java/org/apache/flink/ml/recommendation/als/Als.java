@@ -268,7 +268,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         @Override
         public void endInput() throws Exception {
             LOG.info("generate model   ... " + System.currentTimeMillis());
-            System.out.println("num factors : " + (userFactors.size() + itemFactors.size()));
+            // System.out.println("num factors : " + (userFactors.size() + itemFactors.size()));
             output.collect(new StreamRecord<>(new AlsModelData(userFactors, itemFactors)));
         }
 
@@ -294,7 +294,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
 
         private int srcPartitionId;
         private int targetIdentity;
-        private final Set<Long> neighbors = new HashSet<>();
+        private final Set<Long> neighbors = new HashSet<>(1000000);
 
         @Override
         public void endInput() throws Exception {
@@ -434,7 +434,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         public void mapPartition(Iterable<Ratings> iterable, Collector<Ratings> collector) {
             LOG.info("sort function running ... " + System.currentTimeMillis());
 
-            List<Ratings> listRatings = new ArrayList<>();
+            List<Ratings> listRatings = new ArrayList<>(100000);
             for (Ratings ratings : iterable) {
                 listRatings.add(ratings);
             }
@@ -661,95 +661,86 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
 
         /* Generates the response information, which will be used to update the factors. */
         DataStream<Tuple2<Integer, Factors>> response =
-                request.coGroup(userOrItemFactors)
-                        .where(
-                                (KeySelector<Tuple3<Integer, Byte, Long>, String>)
-                                        value -> value.f1.toString() + value.f2)
-                        .equalTo(
-                                (KeySelector<Factors, String>)
-                                        value -> String.valueOf(value.identity) + value.nodeId)
-                        .window(EndOfStreamWindows.get())
-                        .apply(
-                                new RichCoGroupFunction<
-                                        Tuple3<Integer, Byte, Long>,
-                                        Factors,
-                                        Tuple2<Integer, Factors>>() {
-                                    private boolean isFirst = true;
-                                    private transient int[] flag = null;
-                                    private transient int[] partitionsIds = null;
+                DataStreamUtils.coGroup(
+                        request,
+                        userOrItemFactors,
+                        value -> value.f2,
+                        value -> value.nodeId,
+                        new TupleTypeInfo<>(Types.INT, TypeInformation.of(Factors.class)),
+                        new RichCoGroupFunction<
+                                Tuple3<Integer, Byte, Long>, Factors, Tuple2<Integer, Factors>>() {
+                            private boolean isFirst = true;
+                            private transient int[] flag = null;
+                            private transient int[] partitionsIds = null;
 
-                                    @Override
-                                    public void open(Configuration parameters) {
-                                        LOG.info(
-                                                "calculate response Function running ... "
-                                                        + System.currentTimeMillis());
-                                        int numTasks =
-                                                getRuntimeContext().getNumberOfParallelSubtasks();
-                                        flag = new int[numTasks];
-                                        partitionsIds = new int[numTasks];
+                            @Override
+                            public void open(Configuration parameters) {
+                                LOG.info(
+                                        "calculate response Function running ... "
+                                                + System.currentTimeMillis());
+                                int numTasks = getRuntimeContext().getNumberOfParallelSubtasks();
+                                flag = new int[numTasks];
+                                partitionsIds = new int[numTasks];
+                            }
+
+                            @Override
+                            public void close() {
+                                flag = null;
+                                partitionsIds = null;
+                                LOG.info(
+                                        "calculate response Function end    ... "
+                                                + System.currentTimeMillis());
+                            }
+
+                            @Override
+                            public void coGroup(
+                                    Iterable<Tuple3<Integer, Byte, Long>> request,
+                                    Iterable<Factors> factorsStore,
+                                    Collector<Tuple2<Integer, Factors>> out) {
+                                if (isFirst) {
+                                    LOG.info(
+                                            "calculate response Function processing    ... "
+                                                    + System.currentTimeMillis());
+                                    isFirst = false;
+                                }
+
+                                int numRequests = 0;
+                                byte targetIdentity = -1;
+                                long targetNodeId = Long.MIN_VALUE;
+                                int numPartitionsIds = 0;
+                                Arrays.fill(flag, 0);
+
+                                /* loop over request: srcBlockId, targetIdentity, targetNodeId*/
+                                for (Tuple3<Integer, Byte, Long> t3 : request) {
+                                    numRequests++;
+                                    targetIdentity = t3.f1;
+                                    targetNodeId = t3.f2;
+                                    int partId = t3.f0;
+
+                                    if (flag[partId] == 0) {
+                                        partitionsIds[numPartitionsIds++] = partId;
+                                        flag[partId] = 1;
                                     }
+                                }
 
-                                    @Override
-                                    public void close() {
-                                        flag = null;
-                                        partitionsIds = null;
-                                        LOG.info(
-                                                "calculate response Function end    ... "
-                                                        + System.currentTimeMillis());
+                                if (numRequests == 0) {
+                                    return;
+                                }
+
+                                for (Factors factors : factorsStore) {
+                                    assert (factors.identity == targetIdentity
+                                            && factors.nodeId == targetNodeId);
+
+                                    for (int i = 0; i < numPartitionsIds; i++) {
+                                        int b = partitionsIds[i];
+                                        out.collect(Tuple2.of(b, factors));
                                     }
-
-                                    @Override
-                                    public void coGroup(
-                                            Iterable<Tuple3<Integer, Byte, Long>> request,
-                                            Iterable<Factors> factorsStore,
-                                            Collector<Tuple2<Integer, Factors>> out) {
-                                        if (isFirst) {
-                                            LOG.info(
-                                                    "calculate response Function processing    ... "
-                                                            + System.currentTimeMillis());
-                                            isFirst = false;
-                                        }
-                                        if (!request.iterator().hasNext()
-                                                || !factorsStore.iterator().hasNext()) {
-                                            return;
-                                        }
-
-                                        int numRequests = 0;
-                                        byte targetIdentity = -1;
-                                        long targetNodeId = Long.MIN_VALUE;
-                                        int numPartitionsIds = 0;
-                                        Arrays.fill(flag, 0);
-
-                                        /* loop over request: srcBlockId, targetIdentity, targetNodeId*/
-                                        for (Tuple3<Integer, Byte, Long> t3 : request) {
-                                            numRequests++;
-                                            targetIdentity = t3.f1;
-                                            targetNodeId = t3.f2;
-                                            int partId = t3.f0;
-
-                                            if (flag[partId] == 0) {
-                                                partitionsIds[numPartitionsIds++] = partId;
-                                                flag[partId] = 1;
-                                            }
-                                        }
-
-                                        if (numRequests == 0) {
-                                            return;
-                                        }
-
-                                        for (Factors factors : factorsStore) {
-                                            assert (factors.identity == targetIdentity
-                                                    && factors.nodeId == targetNodeId);
-
-                                            for (int i = 0; i < numPartitionsIds; i++) {
-                                                int b = partitionsIds[i];
-                                                out.collect(Tuple2.of(b, factors));
-                                            }
-                                        }
-                                    }
-                                });
+                                }
+                            }
+                        });
 
         /* Repartition of the data is to improve the performance of coGroup. */
+        miniBatch = miniBatch.partitionCustom((chunkId, numPartitions) -> chunkId, x -> x.f0);
         response = response.partitionCustom((chunkId, numPartitions) -> chunkId, x -> x.f0);
         DataStream<Factors> updatedFactors;
 
@@ -774,83 +765,75 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                         (DataStream<Tuple2<Integer, Factors>>) inputList.get(1);
 
                                 // Tuple: partitionId, Ratings
-                                return miniBatchRatings
-                                        .coGroup(responseData) // Tuple: partitionId, Factors
-                                        .where(value -> value.f0)
-                                        .equalTo(value -> value.f0)
-                                        .window(EndOfStreamWindows.get())
-                                        .apply(
-                                                new UpdateFactorsFunc(
-                                                        false,
-                                                        numFactors,
-                                                        regParam,
-                                                        alpha,
-                                                        nonNegative));
+                                return DataStreamUtils.coGroup(
+                                        miniBatchRatings,
+                                        responseData,
+                                        (value -> value.f0),
+                                        (value -> value.f0),
+                                        TypeInformation.of(Factors.class),
+                                        new UpdateFactorsFunc(
+                                                false, numFactors, regParam, alpha, nonNegative));
                             });
         } else {
             newYty = yty;
             updatedFactors =
-                    miniBatch
-                            .coGroup(response)
-                            .where(value -> value.f0)
-                            .equalTo(value -> value.f0)
-                            .window(EndOfStreamWindows.get())
-                            .apply(new UpdateFactorsFunc(true, numFactors, regParam, nonNegative));
+                    DataStreamUtils.coGroup(
+                            miniBatch,
+                            response,
+                            (value -> value.f0),
+                            (value -> value.f0),
+                            TypeInformation.of(Factors.class),
+                            new UpdateFactorsFunc(true, numFactors, regParam, nonNegative));
         }
 
         DataStream<Factors> factors =
-                userAndItemFactors
-                        .coGroup(updatedFactors)
-                        .where(
-                                (KeySelector<Factors, String>)
-                                        value -> String.valueOf(value.identity) + value.nodeId)
-                        .equalTo(
-                                (KeySelector<Factors, String>)
-                                        value -> String.valueOf(value.identity) + value.nodeId)
-                        .window(EndOfStreamWindows.get())
-                        .apply(
-                                new RichCoGroupFunction<Factors, Factors, Factors>() {
-                                    @Override
-                                    public void open(Configuration parameters) throws Exception {
-                                        super.open(parameters);
-                                        LOG.info(
-                                                "co group to merge factors running ... "
-                                                        + System.currentTimeMillis());
+                DataStreamUtils.coGroup(
+                        userAndItemFactors,
+                        updatedFactors,
+                        value -> String.valueOf(value.identity) + value.nodeId,
+                        value -> String.valueOf(value.identity) + value.nodeId,
+                        TypeInformation.of(Factors.class),
+                        new RichCoGroupFunction<Factors, Factors, Factors>() {
+                            @Override
+                            public void open(Configuration parameters) throws Exception {
+                                super.open(parameters);
+                                LOG.info(
+                                        "co group to merge factors running ... "
+                                                + System.currentTimeMillis());
+                            }
+
+                            @Override
+                            public void close() throws Exception {
+                                super.close();
+                                LOG.info(
+                                        "co group to merge factors end    ... "
+                                                + System.currentTimeMillis());
+                            }
+
+                            @Override
+                            public void coGroup(
+                                    Iterable<Factors> old,
+                                    Iterable<Factors> updated,
+                                    Collector<Factors> out) {
+
+                                assert (old != null);
+                                Iterator<Factors> iterator;
+
+                                if (updated == null || !(iterator = updated.iterator()).hasNext()) {
+                                    for (Factors oldFactors : old) {
+                                        out.collect(oldFactors);
                                     }
+                                } else {
+                                    Factors newFactors = iterator.next();
 
-                                    @Override
-                                    public void close() throws Exception {
-                                        super.close();
-                                        LOG.info(
-                                                "co group to merge factors end    ... "
-                                                        + System.currentTimeMillis());
+                                    for (Factors oldFactors : old) {
+                                        assert (oldFactors.identity == newFactors.identity
+                                                && oldFactors.nodeId == newFactors.nodeId);
+                                        out.collect(newFactors);
                                     }
-
-                                    @Override
-                                    public void coGroup(
-                                            Iterable<Factors> old,
-                                            Iterable<Factors> updated,
-                                            Collector<Factors> out) {
-
-                                        assert (old != null);
-                                        Iterator<Factors> iterator;
-
-                                        if (updated == null
-                                                || !(iterator = updated.iterator()).hasNext()) {
-                                            for (Factors oldFactors : old) {
-                                                out.collect(oldFactors);
-                                            }
-                                        } else {
-                                            Factors newFactors = iterator.next();
-
-                                            for (Factors oldFactors : old) {
-                                                assert (oldFactors.identity == newFactors.identity
-                                                        && oldFactors.nodeId == newFactors.nodeId);
-                                                out.collect(newFactors);
-                                            }
-                                        }
-                                    }
-                                });
+                                }
+                            }
+                        });
         return Tuple2.of(factors, newYty);
     }
 
@@ -877,6 +860,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         @Override
         public void onEpochWatermarkIncremented(
                 int epochWatermark, Context context, Collector<Integer> collector) {
+            System.out.println(factorsMap.size());
             if ((epochWatermark + 1) < maxIter * (numUserBlocks + numItemBlocks)) {
                 collector.collect(epochWatermark);
             }
@@ -976,9 +960,9 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                     for (int i = 0; i < nb.length; i++) {
                         long index = nb[i];
                         Integer pos = index2pos.get(index);
-                        if (pos == null) {
-                            System.out.println(pos + " " + cachedFactors.size());
-                        }
+                        // if (pos == null) {
+                        //    System.out.println(pos + " " + cachedFactors.size());
+                        // }
                         cachedFactors.get(pos).f1.getFactorsAsDoubleArray(buffer.values);
                         ls.add(buffer, rating[i], 1.0);
                     }

@@ -77,20 +77,20 @@ public class AlsTest extends AbstractTestBase {
         Configuration config = new Configuration();
         config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
         env = StreamExecutionEnvironment.getExecutionEnvironment(config);
-        // env.getConfig().enableObjectReuse();
-        env.setParallelism(4);
+        env.getConfig().enableObjectReuse();
+        env.setParallelism(2);
         // env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         // env.setStateBackend(new EmbeddedRocksDBStateBackend());
         env.getCheckpointConfig().disableCheckpointing(); //
-        // env.enableCheckpointing(100);
+       // env.enableCheckpointing(100);
         env.setRestartStrategy(RestartStrategies.noRestart());
         // env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         tEnv = StreamTableEnvironment.create(env);
         Random rand = new Random(0);
         List<Row> trainData = new ArrayList<>();
-        for (int i = 0; i < 200000; ++i) {
+        for (int i = 0; i < 4000000; ++i) {
             trainData.add(
-                    Row.of((long) rand.nextInt(500), (long) rand.nextInt(500), rand.nextDouble()));
+                    Row.of((long) rand.nextInt(500000), (long) rand.nextInt(500000), rand.nextDouble()));
         }
 
         Collections.shuffle(trainData);
@@ -217,7 +217,7 @@ public class AlsTest extends AbstractTestBase {
             //                .setAlpha(0.1)
             //                .setRegParam(0.1)
             //                .setSeed(0)
-            //                .setImplicitPrefs(false)
+            //                .setImplicitPrefs(true)
             //                .setNonNegative(true)
             //                .setNumItemBlocks(i)
             //                .setPredictionCol("pred");
@@ -230,12 +230,12 @@ public class AlsTest extends AbstractTestBase {
                             .setItemCol("item_id")
                             .setRatingCol("rating")
                             .setNumUserBlocks(i)
-                            .setMaxIter(200)
+                            .setMaxIter(2)
                             .setRank(10)
                             .setAlpha(0.1)
                             .setRegParam(0.1)
                             .setSeed(0)
-                            .setImplicitPrefs(false)
+                            .setImplicitPrefs(true)
                             .setNonNegative(true)
                             .setNumItemBlocks(i)
                             .setPredictionCol("pred");

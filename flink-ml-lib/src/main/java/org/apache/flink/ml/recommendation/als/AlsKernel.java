@@ -111,7 +111,6 @@ public class AlsKernel {
                                         value -> {
                                             Long user = value.getFieldAs(userCol);
                                             Long item = value.getFieldAs(itemCol);
-
                                             Number rating =
                                                     ratingCol == null
                                                             ? 0.0F
@@ -595,21 +594,33 @@ public class AlsKernel {
                                     });
                         });
 
+        // request =
+        //        request.map(
+        //                        value -> {
+        //                            System.out.println("before : " + value);
+        //                            return value;
+        //                        })
+        //                .returns(new TupleTypeInfo(Types.INT, Types.BYTE, Types.LONG));
+        // userOrItemFactors =
+        //        userOrItemFactors.map(
+        //                value -> {
+        //                    System.out.println("before : " + value.identity + value.nodeId);
+        //                    return value;
+        //                });
         /* Generates the response information, which will be used to update the factors. */
         DataStream<Tuple2<Integer, Factors>> response =
-                // DataStreamUtils.coGroup(
-                //    request,
-                //    userOrItemFactors,
-                //    value -> String.valueOf(value.f1) + value.f2,
-                //    value -> String.valueOf(value.identity) + value.nodeId,
-                //    new TupleTypeInfo<>(Types.INT, TypeInformation.of(Factors.class)),
-                //    new generateResponseFunc()
-                //  );
-                request.coGroup(userOrItemFactors)
-                        .where(value -> value.f1.toString() + value.f2)
-                        .equalTo(value -> String.valueOf(value.identity) + value.nodeId)
-                        .window(EndOfStreamWindows.get())
-                        .apply(new GenerateResponseFunc());
+                DataStreamUtils.coGroup(
+                        request,
+                        userOrItemFactors,
+                        value -> value.f2,
+                        value -> value.nodeId,
+                        new TupleTypeInfo<>(Types.INT, TypeInformation.of(Factors.class)),
+                        new GenerateResponseFunc());
+        // request.coGroup(userOrItemFactors)
+        //        .where(value -> value.f1.toString() + value.f2)
+        //        .equalTo(value -> String.valueOf(value.identity) + value.nodeId)
+        //        .window(EndOfStreamWindows.get())
+        //        .apply(new GenerateResponseFunc());
         /* Repartition of the data is to improve the performance of coGroup. */
         response = response.partitionCustom((chunkId, numPartitions) -> chunkId, x -> x.f0);
         DataStream<Factors> updatedFactors;
@@ -634,68 +645,62 @@ public class AlsKernel {
                                         (DataStream<Tuple2<Integer, Factors>>) inputList.get(1);
 
                                 // Tuple: partitionId, Ratings
-                                return miniBatchRatings
-                                        .coGroup(responseData) // Tuple: partitionId, Factors
-                                        .where(value -> value.f0)
-                                        .equalTo(value -> value.f0)
-                                        .window(EndOfStreamWindows.get())
-                                        .apply(
-                                                new UpdateFactorsFunc(
-                                                        false,
-                                                        numFactors,
-                                                        regParam,
-                                                        alpha,
-                                                        nonNegative));
+                                return DataStreamUtils.coGroup(
+                                        miniBatchRatings,
+                                        responseData,
+                                        (value -> value.f0),
+                                        (value -> value.f0),
+                                        TypeInformation.of(Factors.class),
+                                        new UpdateFactorsFunc(
+                                                false, numFactors, regParam, alpha, nonNegative));
                             });
         } else {
             newYty = yty;
             updatedFactors =
-                    miniBatch
-                            .coGroup(response)
-                            .where(value -> value.f0)
-                            .equalTo(value -> value.f0)
-                            .window(EndOfStreamWindows.get())
-                            .apply(new UpdateFactorsFunc(true, numFactors, regParam, nonNegative));
+                    DataStreamUtils.coGroup(
+                            miniBatch,
+                            response,
+                            (value -> value.f0),
+                            (value -> value.f0),
+                            TypeInformation.of(Factors.class),
+                            new UpdateFactorsFunc(true, numFactors, regParam, nonNegative));
         }
 
         DataStream<Factors> factors =
-                userAndItemFactors
-                        .coGroup(updatedFactors)
-                        .where(
-                                (KeySelector<Factors, String>)
-                                        value -> String.valueOf(value.identity) + value.nodeId)
-                        .equalTo(
-                                (KeySelector<Factors, String>)
-                                        value -> String.valueOf(value.identity) + value.nodeId)
-                        .window(EndOfStreamWindows.get())
-                        .apply(
-                                new RichCoGroupFunction<Factors, Factors, Factors>() {
+                DataStreamUtils.coGroup(
+                        userAndItemFactors,
+                        updatedFactors,
+                        (KeySelector<Factors, String>)
+                                value -> String.valueOf(value.identity) + value.nodeId,
+                        (KeySelector<Factors, String>)
+                                value -> String.valueOf(value.identity) + value.nodeId,
+                        TypeInformation.of(Factors.class),
+                        new RichCoGroupFunction<Factors, Factors, Factors>() {
 
-                                    @Override
-                                    public void coGroup(
-                                            Iterable<Factors> old,
-                                            Iterable<Factors> updated,
-                                            Collector<Factors> out) {
+                            @Override
+                            public void coGroup(
+                                    Iterable<Factors> old,
+                                    Iterable<Factors> updated,
+                                    Collector<Factors> out) {
 
-                                        assert (old != null);
-                                        Iterator<Factors> iterator;
+                                assert (old != null);
+                                Iterator<Factors> iterator;
 
-                                        if (updated == null
-                                                || !(iterator = updated.iterator()).hasNext()) {
-                                            for (Factors oldFactors : old) {
-                                                out.collect(oldFactors);
-                                            }
-                                        } else {
-                                            Factors newFactors = iterator.next();
-
-                                            for (Factors oldFactors : old) {
-                                                assert (oldFactors.identity == newFactors.identity
-                                                        && oldFactors.nodeId == newFactors.nodeId);
-                                                out.collect(newFactors);
-                                            }
-                                        }
+                                if (updated == null || !(iterator = updated.iterator()).hasNext()) {
+                                    for (Factors oldFactors : old) {
+                                        out.collect(oldFactors);
                                     }
-                                });
+                                } else {
+                                    Factors newFactors = iterator.next();
+
+                                    for (Factors oldFactors : old) {
+                                        assert (oldFactors.identity == newFactors.identity
+                                                && oldFactors.nodeId == newFactors.nodeId);
+                                        out.collect(newFactors);
+                                    }
+                                }
+                            }
+                        });
         return Tuple2.of(factors, newYty);
     }
 
@@ -726,7 +731,16 @@ public class AlsKernel {
                 Collector<Tuple2<Integer, Factors>> out) {
             Iterator<Factors> factorsIterator = factorsStore.iterator();
             Iterator<Tuple3<Integer, Byte, Long>> tuple3Iterator = request.iterator();
-            if (!tuple3Iterator.hasNext() || !factorsIterator.hasNext()) {
+            if (!tuple3Iterator.hasNext()) {
+                // System.out.println("none tuple element happends.");
+                Factors fa = factorsIterator.next();
+                // System.out.println(fa.identity + " " + fa.nodeId);
+                return;
+            }
+
+            if (!factorsIterator.hasNext()) {
+                // System.out.println("none factors element happends.");
+                // System.out.println(tuple3Iterator.next());
                 return;
             }
             int numRequests = 0;
@@ -747,13 +761,13 @@ public class AlsKernel {
                     flag[partId] = 1;
                 }
             }
-
+            // System.out.println("num req " + numRequests);
             if (numRequests == 0) {
                 return;
             }
             while (factorsIterator.hasNext()) {
                 Factors factors = factorsIterator.next();
-
+                // System.out.println(factors.nodeId);
                 assert (factors.identity == targetIdentity && factors.nodeId == targetNodeId);
 
                 for (int i = 0; i < numPartitionsIds; i++) {
