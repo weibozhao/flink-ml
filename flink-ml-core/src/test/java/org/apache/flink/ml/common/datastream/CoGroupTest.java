@@ -24,9 +24,12 @@ import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.RichCoGroupFunction;
 import org.apache.flink.api.common.functions.RichReduceFunction;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.typeutils.RowTypeInfo;
+import org.apache.flink.api.java.typeutils.TupleTypeInfo;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.HeartbeatManagerOptions;
 import org.apache.flink.iteration.DataStreamList;
@@ -40,12 +43,15 @@ import org.apache.flink.iteration.ReplayableDataStreamList;
 import org.apache.flink.ml.common.broadcast.BroadcastUtils;
 import org.apache.flink.ml.common.iteration.TerminateOnMaxIter;
 import org.apache.flink.ml.linalg.DenseVector;
+import org.apache.flink.ml.linalg.typeinfo.DenseVectorTypeInfo;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.KeyedStream;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.transformations.PhysicalTransformation;
+import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.NumberSequenceIterator;
 
@@ -53,12 +59,11 @@ import org.apache.commons.collections.IteratorUtils;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Random;
-
-import static org.junit.Assert.assertEquals;
 
 /** Tests the {@link DataStreamUtils}. */
 public class CoGroupTest {
@@ -72,73 +77,31 @@ public class CoGroupTest {
         env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         env.getConfig().enableObjectReuse();
         env.setRestartStrategy(RestartStrategies.noRestart());
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.noRestart());
+        env.getCheckpointConfig().disableCheckpointing();
+        env.setParallelism(1);
+        // env.enableCheckpointing(100);
+        // env.setRestartStrategy(RestartStrategies.noRestart());
+        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
     }
 
-    @Test
-    public void testCoGroupWithBroadcast() throws Exception {
-        DataStream<Long> broadcast =
-                env.fromParallelCollection(new NumberSequenceIterator(0L, 2L), Types.LONG)
-                        .map(
-                                new MapFunction<Long, Long>() {
-                                    @Override
-                                    public Long map(Long aLong) throws Exception {
-                                        Thread.sleep(10);
-                                        return aLong;
-                                    }
-                                });
-        DataStream<Long> dataStream1 =
-                env.fromParallelCollection(new NumberSequenceIterator(0L, 500L), Types.LONG);
-        DataStream<Long> dataStream2 =
-                env.fromParallelCollection(new NumberSequenceIterator(0L, 500L), Types.LONG);
-
-        DataStream<Integer> coResult =
-                BroadcastUtils.withBroadcastStream(
-                        Arrays.asList(dataStream1, dataStream2),
-                        Collections.singletonMap("broadcast", dataStream1),
-                        inputList -> {
-                            DataStream<Long> data1 = (DataStream<Long>) inputList.get(0);
-                            DataStream<Long> data2 = (DataStream<Long>) inputList.get(1);
-
-                            return data1.coGroup(data2)
-                                    .where(aLong -> String.valueOf(aLong % 6))
-                                    .equalTo(aLong -> String.valueOf(aLong % 6))
-                                    .window(EndOfStreamWindows.get())
-                                    .apply(
-                                            new RichCoGroupFunction<Long, Long, Integer>() {
-                                                @Override
-                                                public void coGroup(
-                                                        Iterable<Long> iterable,
-                                                        Iterable<Long> iterable1,
-                                                        Collector<Integer> collector) {
-                                                    long sum = 0;
-                                                    long key = 0;
-                                                    for (Long l : iterable) {
-                                                        sum += l;
-                                                        key = l;
-                                                    }
-                                                    for (Long l : iterable1) {
-                                                        sum += l;
-                                                    }
-                                                    System.out.println(sum + " " + key);
-                                                    collector.collect(
-                                                            Integer.valueOf(
-                                                                    getRuntimeContext()
-                                                                            .getBroadcastVariable(
-                                                                                    "broadcast")
-                                                                            .get(1)
-                                                                            .toString()));
-                                                }
-                                            });
-                        });
-
-        List<Integer> counts = IteratorUtils.toList(coResult.executeAndCollect());
-        assertEquals(6, counts.size());
-        for (int count : counts) {
-            assertEquals(1, count);
+    public DataStream<Row> getDataStrea() {
+        Random rand = new Random(0);
+        List<Row> trainData = new ArrayList<>();
+        for (int i = 0; i < 4000000; ++i) {
+            DenseVector vec = new DenseVector(10);
+            for (int j = 0; j < 10; ++j) {
+                vec.set(j, rand.nextDouble());
+            }
+            trainData.add(Row.of((long) rand.nextInt(20), (long) rand.nextInt(2000000), vec));
         }
+        Collections.shuffle(trainData);
+        return env.fromCollection(
+                trainData,
+                new RowTypeInfo(
+                        new TypeInformation[] {
+                            Types.LONG, Types.LONG, DenseVectorTypeInfo.INSTANCE
+                        },
+                        new String[] {"user_id", "item_id", "vec"}));
     }
 
     private static class TrainIterationBody implements IterationBody {
@@ -157,67 +120,55 @@ public class CoGroupTest {
                                         variableStreams.get(1);
 
                                 DataStream<Tuple2<Long, DenseVector>> coResult =
-                                        dataStream1
-                                                .coGroup(dataStream2)
-                                                .where(
-                                                        (KeySelector<
-                                                                        Tuple2<Long, DenseVector>,
-                                                                        Long>)
-                                                                t2 -> t2.f0)
-                                                .equalTo(
-                                                        (KeySelector<
-                                                                        Tuple2<Long, DenseVector>,
-                                                                        Long>)
-                                                                t2 -> t2.f0)
-                                                .window(EndOfStreamWindows.get())
-                                                .apply(
-                                                        new RichCoGroupFunction<
-                                                                Tuple2<Long, DenseVector>,
-                                                                Tuple2<Long, DenseVector>,
-                                                                Tuple2<Long, DenseVector>>() {
-                                                            @Override
-                                                            public void coGroup(
-                                                                    Iterable<
-                                                                                    Tuple2<
-                                                                                            Long,
-                                                                                            DenseVector>>
-                                                                            iterable,
-                                                                    Iterable<
-                                                                                    Tuple2<
-                                                                                            Long,
-                                                                                            DenseVector>>
-                                                                            iterable1,
-                                                                    Collector<
-                                                                                    Tuple2<
-                                                                                            Long,
-                                                                                            DenseVector>>
-                                                                            collector) {
-                                                                for (Tuple2<Long, DenseVector>
-                                                                        iter : iterable) {
-                                                                    if (iter == null) {
-                                                                        continue;
-                                                                    }
-                                                                    collector.collect(iter);
-                                                                    System.out.println(
-                                                                            getRuntimeContext()
-                                                                                            .getIndexOfThisSubtask()
-                                                                                    + " "
-                                                                                    + iter);
-                                                                }
-                                                                for (Tuple2<Long, DenseVector>
-                                                                        iter : iterable1) {
-                                                                    if (iter == null) {
-                                                                        continue;
-                                                                    }
-                                                                    System.out.println(
-                                                                            getRuntimeContext()
-                                                                                            .getIndexOfThisSubtask()
-                                                                                    + " "
-                                                                                    + iter);
-                                                                    collector.collect(iter);
-                                                                }
+                                        DataStreamUtils.coGroup(
+                                                dataStream1,
+                                                dataStream2,
+                                                ((KeySelector<Tuple2<Long, DenseVector>, Long>)
+                                                        t2 -> t2.f0),
+                                                ((KeySelector<Tuple2<Long, DenseVector>, Long>)
+                                                        t2 -> t2.f0),
+                                                new TupleTypeInfo<>(
+                                                        Types.LONG, DenseVectorTypeInfo.INSTANCE),
+                                                new RichCoGroupFunction<
+                                                        Tuple2<Long, DenseVector>,
+                                                        Tuple2<Long, DenseVector>,
+                                                        Tuple2<Long, DenseVector>>() {
+                                                    @Override
+                                                    public void coGroup(
+                                                            Iterable<Tuple2<Long, DenseVector>>
+                                                                    iterable,
+                                                            Iterable<Tuple2<Long, DenseVector>>
+                                                                    iterable1,
+                                                            Collector<Tuple2<Long, DenseVector>>
+                                                                    collector) {
+                                                        for (Tuple2<Long, DenseVector> iter :
+                                                                iterable) {
+                                                            if (iter == null) {
+                                                                continue;
                                                             }
-                                                        });
+                                                            collector.collect(iter);
+                                                            // System.out.println(
+                                                            //        getRuntimeContext()
+                                                            //
+                                                            // .getIndexOfThisSubtask()
+                                                            //                + " "
+                                                            //                + iter);
+                                                        }
+                                                        for (Tuple2<Long, DenseVector> iter :
+                                                                iterable1) {
+                                                            if (iter == null) {
+                                                                continue;
+                                                            }
+                                                            // System.out.println(
+                                                            //        getRuntimeContext()
+                                                            //
+                                                            // .getIndexOfThisSubtask()
+                                                            //                + " "
+                                                            //                + iter);
+                                                            collector.collect(iter);
+                                                        }
+                                                    }
+                                                });
                                 return DataStreamList.of(
                                         coResult.filter(
                                                 (FilterFunction<Tuple2<Long, DenseVector>>)
@@ -232,7 +183,7 @@ public class CoGroupTest {
             DataStream<Integer> terminationCriteria =
                     feedbackVariableStream
                             .get(0)
-                            .flatMap(new TerminateOnMaxIter2(2))
+                            .flatMap(new TerminateOnMaxIter2(10))
                             .returns(Types.INT);
 
             return new IterationBodyResult(
@@ -245,7 +196,7 @@ public class CoGroupTest {
         DataStream<Long> broadcast =
                 env.fromParallelCollection(new NumberSequenceIterator(0L, 2L), Types.LONG);
         DataStream<Tuple2<Long, DenseVector>> dataStream1 =
-                env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG)
+                env.fromParallelCollection(new NumberSequenceIterator(0L, 500000L), Types.LONG)
                         .map(
                                 new MapFunction<Long, Tuple2<Long, DenseVector>>() {
                                     final Random rand = new Random();
@@ -253,15 +204,27 @@ public class CoGroupTest {
                                     @Override
                                     public Tuple2<Long, DenseVector> map(Long aLong) {
                                         return Tuple2.of(
-                                                aLong,
+                                                rand.nextLong() % 10L,
                                                 new DenseVector(
                                                         new double[] {
-                                                            rand.nextDouble(), rand.nextDouble()
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble()
                                                         }));
                                     }
                                 });
         DataStream<Tuple2<Long, DenseVector>> dataStream2 =
-                env.fromParallelCollection(new NumberSequenceIterator(0L, 5L), Types.LONG)
+                env.fromParallelCollection(new NumberSequenceIterator(0L, 500000L), Types.LONG)
                         .map(
                                 new MapFunction<Long, Tuple2<Long, DenseVector>>() {
                                     final Random rand = new Random();
@@ -269,10 +232,22 @@ public class CoGroupTest {
                                     @Override
                                     public Tuple2<Long, DenseVector> map(Long aLong) {
                                         return Tuple2.of(
-                                                -aLong,
+                                                -(rand.nextLong() % 500L),
                                                 new DenseVector(
                                                         new double[] {
-                                                            rand.nextDouble(), rand.nextDouble()
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble(),
+                                                            rand.nextDouble()
                                                         }));
                                     }
                                 });

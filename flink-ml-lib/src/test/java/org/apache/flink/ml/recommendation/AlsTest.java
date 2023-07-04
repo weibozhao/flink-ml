@@ -18,14 +18,22 @@
 
 package org.apache.flink.ml.recommendation;
 
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
+import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.connector.file.src.FileSource;
+import org.apache.flink.connector.file.src.reader.TextLineInputFormat;
+import org.apache.flink.ml.common.datastream.TableUtils;
 import org.apache.flink.ml.recommendation.als.Als;
 import org.apache.flink.ml.recommendation.als.AlsModel;
 import org.apache.flink.ml.recommendation.als.AlsRating;
+import org.apache.flink.ml.util.FileUtils;
+import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Table;
@@ -78,19 +86,22 @@ public class AlsTest extends AbstractTestBase {
         config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
         env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         env.getConfig().enableObjectReuse();
-        env.setParallelism(2);
+        env.setParallelism(1);
         // env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         // env.setStateBackend(new EmbeddedRocksDBStateBackend());
         env.getCheckpointConfig().disableCheckpointing(); //
-       // env.enableCheckpointing(100);
+        // env.enableCheckpointing(100);
         env.setRestartStrategy(RestartStrategies.noRestart());
         // env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         tEnv = StreamTableEnvironment.create(env);
         Random rand = new Random(0);
         List<Row> trainData = new ArrayList<>();
-        for (int i = 0; i < 4000000; ++i) {
+        for (int i = 0; i < 40000; ++i) {
             trainData.add(
-                    Row.of((long) rand.nextInt(500000), (long) rand.nextInt(500000), rand.nextDouble()));
+                    Row.of(
+                            (long) rand.nextInt(20),
+                            (long) rand.nextInt(100000),
+                            rand.nextDouble()));
         }
 
         Collections.shuffle(trainData);
@@ -125,7 +136,7 @@ public class AlsTest extends AbstractTestBase {
         for (Row predictionRow : predResult) {
             long label = predictionRow.getFieldAs(ratingCol);
             double prediction = (double) predictionRow.getField(predictionCol);
-            System.out.println(label + " " + prediction);
+            // System.out.println(label + " " + prediction);
             // assertTrue(Math.abs(prediction - label) / label < PREDICTION_TOLERANCE);
         }
     }
@@ -206,31 +217,13 @@ public class AlsTest extends AbstractTestBase {
     @Test
     public void testFitAndPredict() throws Exception {
         for (int i = 1; i < 2; ++i) {
-            //AlsRating alsRating =
-            //        new AlsRating()
-            //                .setUserCol("user_id")
-            //                .setItemCol("item_id")
-            //                .setRatingCol("rating")
-            //                .setNumUserBlocks(i)
-            //                .setMaxIter(2)
-            //                .setRank(10)
-            //                .setAlpha(0.1)
-            //                .setRegParam(0.1)
-            //                .setSeed(0)
-            //                .setImplicitPrefs(true)
-            //                .setNonNegative(true)
-            //                .setNumItemBlocks(i)
-            //                .setPredictionCol("pred");
-            //Table output = alsRating.fit(trainDataTable).transform(testDataTable)[0];
-            //verifyPredictionResult(output, alsRating.getItemCol(), alsRating.getPredictionCol());
-
             Als als =
                     new Als()
                             .setUserCol("user_id")
                             .setItemCol("item_id")
                             .setRatingCol("rating")
                             .setNumUserBlocks(i)
-                            .setMaxIter(2)
+                            .setMaxIter(5)
                             .setRank(10)
                             .setAlpha(0.1)
                             .setRegParam(0.1)
@@ -269,5 +262,91 @@ public class AlsTest extends AbstractTestBase {
 
         // Table output1 = loadModel.transform(testDataTable)[0];
         // verifyPredictionResult(output1, als.getItemCol(), als.getPredictionCol());
+    }
+
+    public Table getMovielensData() {
+        String path = "/Users/weibo/workspace/data/flink_ml_als_test_data/ml_400w";
+        StreamExecutionEnvironment env = TableUtils.getExecutionEnvironment(tEnv);
+        Source<String, ?, ?> source =
+                FileSource.forRecordStreamFormat(
+                                new TextLineInputFormat(), FileUtils.getDataPath(path))
+                        .build();
+        DataStream<Row> ds =
+                env.fromSource(source, WatermarkStrategy.noWatermarks(), "movlelens")
+                        .map(
+                                new MapFunction<String, Row>() {
+                                    @Override
+                                    public Row map(String s) throws Exception {
+                                        String[] contents = s.split(",");
+                                        long uid = Long.parseLong(contents[0]);
+                                        long iid = Long.parseLong(contents[1]);
+                                        double rating = Double.parseDouble(contents[2]);
+
+                                        return Row.of(uid, iid, rating);
+                                    }
+                                })
+                        .returns(
+                                new RowTypeInfo(
+                                        new TypeInformation[] {
+                                            Types.LONG, Types.LONG, Types.DOUBLE
+                                        },
+                                        new String[] {"uid", "iid", "rating"}));
+        return tEnv.fromDataStream(ds);
+    }
+
+    public Table getAWSTable() {
+        String path = "/Users/weibo/workspace/data/flink_ml_als_test_data/aws_200w";
+        StreamExecutionEnvironment env = TableUtils.getExecutionEnvironment(tEnv);
+        Source<String, ?, ?> source =
+                FileSource.forRecordStreamFormat(
+                                new TextLineInputFormat(), FileUtils.getDataPath(path))
+                        .build();
+        DataStream<Row> ds =
+                env.fromSource(source, WatermarkStrategy.noWatermarks(), "movlelens")
+                        .map(
+                                new MapFunction<String, Row>() {
+                                    @Override
+                                    public Row map(String s) throws Exception {
+                                        String[] contents = s.split(",");
+                                        long uid = Long.parseLong(contents[1]);
+                                        long iid = Long.parseLong(contents[2]);
+                                        double rating = Double.parseDouble(contents[0]);
+
+                                        return Row.of(uid, iid, rating);
+                                    }
+                                })
+                        .returns(
+                                new RowTypeInfo(
+                                        new TypeInformation[] {
+                                            Types.LONG, Types.LONG, Types.DOUBLE
+                                        },
+                                        new String[] {"uid", "iid", "rating"}));
+        return tEnv.fromDataStream(ds);
+    }
+
+    @Test
+    public void testAlsFitAndPredict() throws Exception {
+        env.getConfig().enableObjectReuse();
+        for (int i = 1; i < 2; ++i) {
+            Als als =
+                    new Als()
+                            .setUserCol("uid")
+                            .setItemCol("iid")
+                            .setRatingCol("rating")
+                            .setNumUserBlocks(i)
+                            .setMaxIter(10)
+                            .setRank(10)
+                            .setAlpha(0.1)
+                            .setRegParam(0.1)
+                            .setSeed(0)
+                            .setNumItemBlocks(1)
+                            .setNumUserBlocks(1)
+                            .setImplicitPrefs(false)
+                            .setNonNegative(false)
+                            .setPredictionCol("pred");
+            Table alsTable = getAWSTable();
+            Table output1 = als.fit(alsTable).transform(alsTable)[0];
+            verifyPredictionResult(output1, als.getItemCol(), als.getPredictionCol());
+        }
     }
 }

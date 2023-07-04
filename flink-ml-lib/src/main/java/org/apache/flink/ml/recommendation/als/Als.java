@@ -58,6 +58,7 @@ import org.apache.flink.ml.util.ReadWriteUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction.Context;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.BoundedOneInput;
@@ -147,7 +148,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                 DataStreamList.of(userItemFactors, yty),
                                 ReplayableDataStreamList.replay(ratingData),
                                 IterationConfig.newBuilder()
-                                        .setOperatorLifeCycle(OperatorLifeCycle.ALL_ROUND)
+                                        .setOperatorLifeCycle(OperatorLifeCycle.PER_ROUND)
                                         .build(),
                                 new TrainIterationBody(
                                         getRank(),
@@ -222,6 +223,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                 DataStream<Ratings> ratingData = dataStreams.get(0);
                                 Tuple2<DataStream<Factors>, DataStream<Tuple2<double[], Integer>>>
                                         factorsAndYty =
+                                                //  Tuple2.of(userAndItemFactors, yty);
                                                 updateFactors(
                                                         userAndItemFactors,
                                                         ratingData,
@@ -834,6 +836,7 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
                                 }
                             }
                         });
+
         return Tuple2.of(factors, newYty);
     }
 
@@ -860,7 +863,14 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
         @Override
         public void onEpochWatermarkIncremented(
                 int epochWatermark, Context context, Collector<Integer> collector) {
-            System.out.println(factorsMap.size());
+            System.out.println(
+                    System.currentTimeMillis() / 1000
+                            + " "
+                            + maxIter
+                            + " "
+                            + numItemBlocks
+                            + " "
+                            + numUserBlocks);
             if ((epochWatermark + 1) < maxIter * (numUserBlocks + numItemBlocks)) {
                 collector.collect(epochWatermark);
             }
@@ -868,7 +878,6 @@ public class Als implements Estimator<Als, AlsModel>, AlsParams<Als> {
 
         @Override
         public void onIterationTerminated(Context context, Collector<Integer> collector) {
-            System.out.println(factorsMap.size());
             List<Factors> modelList = new ArrayList<>();
             for (String key : factorsMap.keySet()) {
                 modelList.add(factorsMap.get(key));
