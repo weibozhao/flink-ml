@@ -18,17 +18,14 @@
 
 package org.apache.flink.ml.feature;
 
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.feature.kbinsdiscretizer.KBinsDiscretizer;
 import org.apache.flink.ml.feature.kbinsdiscretizer.KBinsDiscretizerModel;
 import org.apache.flink.ml.feature.kbinsdiscretizer.KBinsDiscretizerModelData;
 import org.apache.flink.ml.feature.kbinsdiscretizer.KBinsDiscretizerParams;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.Vectors;
-import org.apache.flink.ml.util.ReadWriteUtils;
+import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.TestUtils;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -86,7 +83,7 @@ public class KBinsDiscretizerTest extends AbstractTestBase {
     private static final double[][] UNIFORM_MODEL_DATA =
             new double[][] {
                 new double[] {1, 5, 9, 13},
-                new double[] {Double.MIN_VALUE, Double.MAX_VALUE},
+                new double[] {Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY},
                 new double[] {0, 1, 2, 3}
             };
 
@@ -104,11 +101,11 @@ public class KBinsDiscretizerTest extends AbstractTestBase {
             Arrays.asList(
                     Row.of(Vectors.dense(0, 0, 0)),
                     Row.of(Vectors.dense(0, 0, 0)),
-                    Row.of(Vectors.dense(0, 0, 0)),
-                    Row.of(Vectors.dense(1, 0, 0)),
-                    Row.of(Vectors.dense(2, 0, 0)),
-                    Row.of(Vectors.dense(2, 0, 0)),
-                    Row.of(Vectors.dense(2, 0, 0)));
+                    Row.of(Vectors.dense(0, 0, 1)),
+                    Row.of(Vectors.dense(1, 0, 1)),
+                    Row.of(Vectors.dense(2, 0, 1)),
+                    Row.of(Vectors.dense(2, 0, 1)),
+                    Row.of(Vectors.dense(2, 0, 1)));
 
     private static final List<Row> KMEANS_OUTPUT =
             Arrays.asList(
@@ -124,13 +121,7 @@ public class KBinsDiscretizerTest extends AbstractTestBase {
 
     @Before
     public void before() {
-        Configuration config = new Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        env = StreamExecutionEnvironment.getExecutionEnvironment(config);
-        env.getConfig().enableObjectReuse();
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.noRestart());
+        env = TestUtils.getExecutionEnvironment();
         tEnv = StreamTableEnvironment.create(env);
         trainTable = tEnv.fromDataStream(env.fromCollection(TRAIN_INPUT)).as("input");
         testTable = tEnv.fromDataStream(env.fromCollection(TEST_INPUT)).as("input");
@@ -215,10 +206,18 @@ public class KBinsDiscretizerTest extends AbstractTestBase {
                 new KBinsDiscretizer().setNumBins(3).setStrategy(KBinsDiscretizerParams.UNIFORM);
         kBinsDiscretizer =
                 TestUtils.saveAndReload(
-                        tEnv, kBinsDiscretizer, tempFolder.newFolder().getAbsolutePath());
+                        tEnv,
+                        kBinsDiscretizer,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        KBinsDiscretizer::load);
 
         KBinsDiscretizerModel model = kBinsDiscretizer.fit(trainTable);
-        model = TestUtils.saveAndReload(tEnv, model, tempFolder.newFolder().getAbsolutePath());
+        model =
+                TestUtils.saveAndReload(
+                        tEnv,
+                        model,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        KBinsDiscretizerModel::load);
 
         assertEquals(
                 Collections.singletonList("binEdges"),
@@ -262,7 +261,7 @@ public class KBinsDiscretizerTest extends AbstractTestBase {
         KBinsDiscretizerModel model = kBinsDiscretizer.fit(trainTable);
 
         KBinsDiscretizerModel newModel = new KBinsDiscretizerModel();
-        ReadWriteUtils.updateExistingParams(newModel, model.getParamMap());
+        ParamUtils.updateExistingParams(newModel, model.getParamMap());
         newModel.setModelData(model.getModelData());
         Table output = newModel.transform(testTable)[0];
 
@@ -282,5 +281,24 @@ public class KBinsDiscretizerTest extends AbstractTestBase {
         } catch (Throwable e) {
             assertEquals("The training set is empty.", ExceptionUtils.getRootCause(e).getMessage());
         }
+    }
+
+    @Test
+    public void testBinsWithWidthAsZero() throws Exception {
+        final List<Row> expectedOutput =
+                Arrays.asList(
+                        Row.of(Vectors.dense(0, 0, 0)),
+                        Row.of(Vectors.dense(0, 0, 0)),
+                        Row.of(Vectors.dense(0, 0, 1)),
+                        Row.of(Vectors.dense(3, 0, 1)),
+                        Row.of(Vectors.dense(5, 0, 1)),
+                        Row.of(Vectors.dense(6, 0, 1)),
+                        Row.of(Vectors.dense(6, 0, 1)));
+
+        KBinsDiscretizer kBinsDiscretizer =
+                new KBinsDiscretizer().setNumBins(10).setStrategy(KBinsDiscretizerParams.QUANTILE);
+
+        Table output = kBinsDiscretizer.fit(trainTable).transform(testTable)[0];
+        verifyPredictionResult(expectedOutput, output, kBinsDiscretizer.getOutputCol());
     }
 }

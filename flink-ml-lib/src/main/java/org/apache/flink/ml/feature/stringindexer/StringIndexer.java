@@ -22,8 +22,7 @@ import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
-import org.apache.flink.api.common.typeinfo.TypeHint;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.iteration.operator.OperatorStateUtils;
 import org.apache.flink.ml.api.Estimator;
@@ -65,8 +64,12 @@ import java.util.Map.Entry;
  * is arbitrarily ordered. Users can control this by setting {@link
  * StringIndexerParams#STRING_ORDER_TYPE}.
  *
- * <p>The `keep` option of {@link HasHandleInvalid} means that we put the invalid entries in a
- * special bucket, whose index is the number of distinct values in this column.
+ * <p>User can also control the max number of output indices by setting {@link
+ * StringIndexerParams#MAX_INDEX_NUM}. This parameter only works if {@link
+ * StringIndexerParams#STRING_ORDER_TYPE} is set as 'frequencyDesc'.
+ *
+ * <p>The `keep` option of {@link HasHandleInvalid} means that we transform the invalid input into a
+ * special index, whose value is the number of distinct values in this column.
  */
 public class StringIndexer
         implements Estimator<StringIndexer, StringIndexerModel>,
@@ -97,20 +100,31 @@ public class StringIndexer
         String[] inputCols = getInputCols();
         String[] outputCols = getOutputCols();
         Preconditions.checkArgument(inputCols.length == outputCols.length);
+        if (getMaxIndexNum() < Integer.MAX_VALUE) {
+            Preconditions.checkArgument(
+                    getStringOrderType().equals(StringIndexerParams.FREQUENCY_DESC_ORDER),
+                    "Setting "
+                            + MAX_INDEX_NUM.name
+                            + " smaller than INT.MAX only works when "
+                            + STRING_ORDER_TYPE.name
+                            + " is set as "
+                            + StringIndexerParams.FREQUENCY_DESC_ORDER
+                            + ".");
+        }
         StreamTableEnvironment tEnv =
                 (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
 
-        DataStream<HashMap<String, Long>[]> localCountedString =
+        DataStream<Map<String, Long>[]> localCountedString =
                 tEnv.toDataStream(inputs[0])
                         .transform(
                                 "countStringOperator",
-                                TypeInformation.of(new TypeHint<HashMap<String, Long>[]>() {}),
+                                Types.OBJECT_ARRAY(Types.MAP(Types.STRING, Types.LONG)),
                                 new CountStringOperator(inputCols));
 
-        DataStream<HashMap<String, Long>[]> countedString =
+        DataStream<Map<String, Long>[]> countedString =
                 DataStreamUtils.reduce(
                         localCountedString,
-                        (ReduceFunction<HashMap<String, Long>[]>)
+                        (ReduceFunction<Map<String, Long>[]>)
                                 (value1, value2) -> {
                                     for (int i = 0; i < value1.length; i++) {
                                         for (Entry<String, Long> stringAndCnt :
@@ -124,27 +138,28 @@ public class StringIndexer
                                         }
                                     }
                                     return value1;
-                                });
+                                },
+                        Types.OBJECT_ARRAY(Types.MAP(Types.STRING, Types.LONG)));
 
         DataStream<StringIndexerModelData> modelData =
-                countedString.map(new ModelGenerator(getStringOrderType()));
+                countedString.map(new ModelGenerator(getStringOrderType(), getMaxIndexNum()));
         modelData.getTransformation().setParallelism(1);
 
         StringIndexerModel model =
                 new StringIndexerModel().setModelData(tEnv.fromDataStream(modelData));
-        ReadWriteUtils.updateExistingParams(model, paramMap);
+        ParamUtils.updateExistingParams(model, paramMap);
         return model;
     }
 
     /** Computes the occurrence time of each string by columns. */
-    private static class CountStringOperator extends AbstractStreamOperator<HashMap<String, Long>[]>
-            implements OneInputStreamOperator<Row, HashMap<String, Long>[]>, BoundedOneInput {
+    private static class CountStringOperator extends AbstractStreamOperator<Map<String, Long>[]>
+            implements OneInputStreamOperator<Row, Map<String, Long>[]>, BoundedOneInput {
         /** The name of input columns. */
         private final String[] inputCols;
         /** The occurrence time of each string by column. */
-        private HashMap<String, Long>[] stringCntByColumn;
+        private Map<String, Long>[] stringCntByColumn;
         /** The state of stringCntByColumn. */
-        private ListState<HashMap<String, Long>[]> stringCntByColumnState;
+        private ListState<Map<String, Long>[]> stringCntByColumnState;
 
         public CountStringOperator(String[] inputCols) {
             this.inputCols = inputCols;
@@ -166,7 +181,10 @@ public class StringIndexer
             for (int i = 0; i < inputCols.length; i++) {
                 Object objVal = r.getField(inputCols[i]);
                 String stringVal;
-                if (objVal instanceof String) {
+                if (null == objVal) {
+                    // Null values should be ignored.
+                    continue;
+                } else if (objVal instanceof String) {
                     stringVal = (String) objVal;
                 } else if (objVal instanceof Number) {
                     stringVal = String.valueOf(objVal);
@@ -186,8 +204,8 @@ public class StringIndexer
                             .getListState(
                                     new ListStateDescriptor<>(
                                             "stringCntByColumnState",
-                                            TypeInformation.of(
-                                                    new TypeHint<HashMap<String, Long>[]>() {})));
+                                            Types.OBJECT_ARRAY(
+                                                    Types.MAP(Types.STRING, Types.LONG))));
 
             OperatorStateUtils.getUniqueElement(stringCntByColumnState, "stringCntByColumnState")
                     .ifPresent(x -> stringCntByColumn = x);
@@ -202,21 +220,27 @@ public class StringIndexer
 
     /**
      * Merges all the extracted strings and generates the {@link StringIndexerModelData} according
-     * to the specified string order type.
+     * to the specified string order type and maxIndexNum.
+     *
+     * <p>Note that the maxIndexNum works only when the strings are ordered by {@link
+     * StringIndexerParams#ALPHABET_DESC_ORDER}.
      */
     private static class ModelGenerator
-            implements MapFunction<HashMap<String, Long>[], StringIndexerModelData> {
+            implements MapFunction<Map<String, Long>[], StringIndexerModelData> {
         private final String stringOrderType;
+        private final int maxIndexNum;
 
-        public ModelGenerator(String stringOrderType) {
+        public ModelGenerator(String stringOrderType, int maxIndexNum) {
             this.stringOrderType = stringOrderType;
+            this.maxIndexNum = maxIndexNum;
         }
 
         @Override
-        public StringIndexerModelData map(HashMap<String, Long>[] value) {
+        public StringIndexerModelData map(Map<String, Long>[] value) {
             int numCols = value.length;
             String[][] stringArrays = new String[numCols][];
             ArrayList<Tuple2<String, Long>> stringsAndCnts = new ArrayList<>();
+
             for (int i = 0; i < numCols; i++) {
                 stringsAndCnts.clear();
                 stringsAndCnts.ensureCapacity(value[i].size());
@@ -239,6 +263,18 @@ public class StringIndexer
                         stringsAndCnts.sort(
                                 (valAndCnt1, valAndCnt2) ->
                                         -valAndCnt1.f1.compareTo(valAndCnt2.f1));
+
+                        if (stringsAndCnts.size() > maxIndexNum) {
+                            ArrayList<Tuple2<String, Long>> frequentStringsAndCnts =
+                                    new ArrayList<>();
+                            // Reserves the last index for infrequent element.
+                            frequentStringsAndCnts.ensureCapacity(maxIndexNum - 1);
+                            for (int indexId = 0; indexId < maxIndexNum - 1; indexId++) {
+                                frequentStringsAndCnts.add(stringsAndCnts.get(indexId));
+                            }
+                            stringsAndCnts = frequentStringsAndCnts;
+                        }
+
                         break;
                     case ARBITRARY_ORDER:
                         break;

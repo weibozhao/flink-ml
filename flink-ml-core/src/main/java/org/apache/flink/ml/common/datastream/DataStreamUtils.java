@@ -114,9 +114,26 @@ public class DataStreamUtils {
      */
     public static <IN, OUT> DataStream<OUT> mapPartition(
             DataStream<IN> input, MapPartitionFunction<IN, OUT> func) {
-        TypeInformation<OUT> resultType =
+        TypeInformation<OUT> outType =
                 TypeExtractor.getMapPartitionReturnTypes(func, input.getType(), null, true);
-        return input.transform("mapPartition", resultType, new MapPartitionOperator<>(func))
+        return mapPartition(input, func, outType);
+    }
+
+    /**
+     * Applies a {@link MapPartitionFunction} on a bounded data stream.
+     *
+     * @param input The input data stream.
+     * @param func The user defined mapPartition function.
+     * @param outType The type information of the output.
+     * @param <IN> The class type of the input.
+     * @param <OUT> The class type of output.
+     * @return The result data stream.
+     */
+    public static <IN, OUT> DataStream<OUT> mapPartition(
+            DataStream<IN> input,
+            MapPartitionFunction<IN, OUT> func,
+            TypeInformation<OUT> outType) {
+        return input.transform("mapPartition", outType, new MapPartitionOperator<>(func))
                 .setParallelism(input.getParallelism());
     }
 
@@ -130,14 +147,29 @@ public class DataStreamUtils {
      * @return The result data stream.
      */
     public static <T> DataStream<T> reduce(DataStream<T> input, ReduceFunction<T> func) {
+        return reduce(input, func, input.getType());
+    }
+
+    /**
+     * Applies a {@link ReduceFunction} on a bounded data stream. The output stream contains at most
+     * one stream record and its parallelism is one.
+     *
+     * @param input The input data stream.
+     * @param func The user defined reduce function.
+     * @param outType The type information of the output.
+     * @param <T> The class type of the input.
+     * @return The result data stream.
+     */
+    public static <T> DataStream<T> reduce(
+            DataStream<T> input, ReduceFunction<T> func, TypeInformation<T> outType) {
         DataStream<T> partialReducedStream =
-                input.transform("reduce", input.getType(), new ReduceOperator<>(func))
+                input.transform("reduce", outType, new ReduceOperator<>(func))
                         .setParallelism(input.getParallelism());
         if (partialReducedStream.getParallelism() == 1) {
             return partialReducedStream;
         } else {
             return partialReducedStream
-                    .transform("reduce", input.getType(), new ReduceOperator<>(func))
+                    .transform("reduce", outType, new ReduceOperator<>(func))
                     .setParallelism(1);
         }
     }
@@ -148,16 +180,85 @@ public class DataStreamUtils {
      *
      * @param input The input keyed data stream.
      * @param func The user defined reduce function.
-     * @return The result data stream.
      * @param <T> The class type of input.
      * @param <K> The key type of input.
+     * @return The result data stream.
      */
     public static <T, K> DataStream<T> reduce(KeyedStream<T, K> input, ReduceFunction<T> func) {
+        return reduce(input, func, input.getType());
+    }
+
+    /**
+     * Applies a {@link ReduceFunction} on a bounded keyed data stream. The output stream contains
+     * one stream record for each key.
+     *
+     * @param input The input keyed data stream.
+     * @param func The user defined reduce function.
+     * @param outType The type information of the output.
+     * @param <T> The class type of input.
+     * @param <K> The key type of input.
+     * @return The result data stream.
+     */
+    public static <T, K> DataStream<T> reduce(
+            KeyedStream<T, K> input, ReduceFunction<T> func, TypeInformation<T> outType) {
         return input.transform(
                         "Keyed Reduce",
-                        input.getType(),
+                        outType,
                         new KeyedReduceOperator<>(
-                                func, input.getType().createSerializer(input.getExecutionConfig())))
+                                func, outType.createSerializer(input.getExecutionConfig())))
+                .setParallelism(input.getParallelism());
+    }
+
+    /**
+     * Applies a {@link AggregateFunction} on a bounded keyed data stream. The output stream
+     * contains one stream record for each key.
+     *
+     * @param input The input keyed data stream.
+     * @param func The user defined aggredate function.
+     * @param accType The type information of intermediate data.
+     * @param outType The type information of the output.
+     * @return The result data stream.
+     * @param <K> The key type of input.
+     * @param <IN> The class type of input.
+     * @param <ACC> The type of intermediate data.
+     * @param <OUT> The class type of output.
+     */
+    public static <K, IN, ACC, OUT> DataStream<OUT> keyedAggregate(
+            KeyedStream<IN, K> input,
+            AggregateFunction<IN, ACC, OUT> func,
+            TypeInformation<ACC> accType,
+            TypeInformation<OUT> outType) {
+        return input.transform(
+                        "Keyed GroupReduce",
+                        outType,
+                        new KeyedAggregateOperator<>(
+                                func, accType.createSerializer(input.getExecutionConfig())))
+                .setParallelism(input.getParallelism());
+    }
+
+    /**
+     * Applies a {@link AggregateFunction} on a bounded keyed data stream. The output stream
+     * contains one stream record for each key.
+     *
+     * @param input The input keyed data stream.
+     * @param func The user defined aggredate function.
+     * @param accTypeSerializer The type serializer of intermediate data.
+     * @param outType The type information of the output.
+     * @return The result data stream.
+     * @param <K> The key type of input.
+     * @param <IN> The class type of input.
+     * @param <ACC> The type of intermediate data.
+     * @param <OUT> The class type of output.
+     */
+    public static <K, IN, ACC, OUT> DataStream<OUT> keyedAggregate(
+            KeyedStream<IN, K> input,
+            AggregateFunction<IN, ACC, OUT> func,
+            TypeSerializer<ACC> accTypeSerializer,
+            TypeInformation<OUT> outType) {
+        return input.transform(
+                        "Keyed GroupReduce",
+                        outType,
+                        new KeyedAggregateOperator<>(func, accTypeSerializer))
                 .setParallelism(input.getParallelism());
     }
 
@@ -187,6 +288,34 @@ public class DataStreamUtils {
         TypeInformation<OUT> outType =
                 TypeExtractor.getAggregateFunctionReturnType(func, input.getType(), null, true);
 
+        return aggregate(input, func, accType, outType);
+    }
+
+    /**
+     * Aggregates the elements in each partition of the input bounded stream, and then merges the
+     * partial results of all partitions. The output stream contains the aggregated result and its
+     * parallelism is one.
+     *
+     * <p>Note: If the parallelism of the input stream is N, this method would invoke {@link
+     * AggregateFunction#createAccumulator()} N times and {@link AggregateFunction#merge(Object,
+     * Object)} N - 1 times. Thus the initial accumulator should be neutral (e.g. empty list for
+     * list concatenation or `0` for summation), otherwise the aggregation result would be affected
+     * by the parallelism of the input stream.
+     *
+     * @param input The input data stream.
+     * @param func The user defined aggregate function.
+     * @param accType The type of the accumulated values.
+     * @param outType The types of the output.
+     * @param <IN> The class type of the input.
+     * @param <ACC> The class type of the accumulated values.
+     * @param <OUT> The class type of the output values.
+     * @return The result data stream.
+     */
+    public static <IN, ACC, OUT> DataStream<OUT> aggregate(
+            DataStream<IN> input,
+            AggregateFunction<IN, ACC, OUT> func,
+            TypeInformation<ACC> accType,
+            TypeInformation<OUT> outType) {
         DataStream<ACC> partialAggregatedStream =
                 input.transform(
                         "partialAggregate", accType, new PartialAggregateOperator<>(func, accType));
@@ -199,7 +328,10 @@ public class DataStreamUtils {
     }
 
     /**
-     * Performs a uniform sampling over the elements in a bounded data stream.
+     * Performs an approximate uniform sampling over the elements in a bounded data stream. The
+     * difference of probabilities of two data points been sampled is bounded by O(numSamples * p *
+     * p / (M * M)), where p is the parallelism of the input stream, M is the total number of data
+     * points that the input stream contains.
      *
      * <p>This method takes samples without replacement. If the number of elements in the stream is
      * smaller than expected number of samples, all elements will be included in the sample.
@@ -212,13 +344,19 @@ public class DataStreamUtils {
     public static <T> DataStream<T> sample(DataStream<T> input, int numSamples, long randomSeed) {
         int inputParallelism = input.getParallelism();
 
-        return input.transform(
-                        "samplingOperator",
+        // The maximum difference of number of data points in each partition after calling
+        // `rebalance` is `inputParallelism`. As a result, extra `inputParallelism` data points are
+        // sampled for each partition in the first round.
+        int firstRoundNumSamples =
+                Math.min((numSamples / inputParallelism) + inputParallelism, numSamples);
+        return input.rebalance()
+                .transform(
+                        "firstRoundSampling",
                         input.getType(),
-                        new SamplingOperator<>(numSamples, randomSeed))
+                        new SamplingOperator<>(firstRoundNumSamples, randomSeed))
                 .setParallelism(inputParallelism)
                 .transform(
-                        "samplingOperator",
+                        "secondRoundSampling",
                         input.getType(),
                         new SamplingOperator<>(numSamples, randomSeed))
                 .setParallelism(1)
@@ -258,18 +396,41 @@ public class DataStreamUtils {
      * @param function The user defined process function.
      * @return The data stream that is the result of applying the window function to each window.
      */
-    @SuppressWarnings({"rawtypes", "unchecked"})
     public static <IN, OUT, W extends Window> SingleOutputStreamOperator<OUT> windowAllAndProcess(
             DataStream<IN> input, Windows windows, ProcessAllWindowFunction<IN, OUT, W> function) {
-        AllWindowedStream<IN, W> allWindowedStream;
+        AllWindowedStream<IN, W> allWindowedStream = getAllWindowedStream(input, windows);
+        return allWindowedStream.process(function);
+    }
+
+    /**
+     * Creates windows from data in the non key grouped input stream and applies the given window
+     * function to each window.
+     *
+     * @param input The input data stream to be windowed and processed.
+     * @param windows The windowing strategy that defines how input data would be sliced into
+     *     batches.
+     * @param function The user defined process function.
+     * @param outType The type information of the output.
+     * @return The data stream that is the result of applying the window function to each window.
+     */
+    public static <IN, OUT, W extends Window> SingleOutputStreamOperator<OUT> windowAllAndProcess(
+            DataStream<IN> input,
+            Windows windows,
+            ProcessAllWindowFunction<IN, OUT, W> function,
+            TypeInformation<OUT> outType) {
+        AllWindowedStream<IN, W> allWindowedStream = getAllWindowedStream(input, windows);
+        return allWindowedStream.process(function, outType);
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static <IN, W extends Window> AllWindowedStream<IN, W> getAllWindowedStream(
+            DataStream<IN> input, Windows windows) {
         if (windows instanceof CountTumblingWindows) {
             long countWindowSize = ((CountTumblingWindows) windows).getSize();
-            allWindowedStream = (AllWindowedStream<IN, W>) input.countWindowAll(countWindowSize);
+            return (AllWindowedStream<IN, W>) input.countWindowAll(countWindowSize);
         } else {
-            allWindowedStream =
-                    input.windowAll((WindowAssigner) getDataStreamTimeWindowAssigner(windows));
+            return input.windowAll((WindowAssigner) getDataStreamTimeWindowAssigner(windows));
         }
-        return allWindowedStream.process(function);
     }
 
     private static WindowAssigner<Object, TimeWindow> getDataStreamTimeWindowAssigner(
@@ -460,6 +621,64 @@ public class DataStreamUtils {
 
         @Override
         public void onProcessingTime(InternalTimer<KEY, VoidNamespace> timer) throws Exception {}
+    }
+
+    private static class KeyedAggregateOperator<IN, K, ACC, OUT>
+            extends AbstractUdfStreamOperator<OUT, AggregateFunction<IN, ACC, OUT>>
+            implements OneInputStreamOperator<IN, OUT>, Triggerable<K, VoidNamespace> {
+
+        AggregateFunction aggregator;
+
+        private static final String STATE_NAME = "_op_state";
+
+        private transient ValueState<ACC> values;
+
+        private final TypeSerializer<ACC> serializer;
+
+        private InternalTimerService<VoidNamespace> timerService;
+
+        public KeyedAggregateOperator(
+                AggregateFunction<IN, ACC, OUT> aggregator, TypeSerializer<ACC> serializer) {
+            super(aggregator);
+            this.serializer = serializer;
+        }
+
+        @Override
+        public void open() throws Exception {
+            super.open();
+            ValueStateDescriptor<ACC> stateId = new ValueStateDescriptor<>(STATE_NAME, serializer);
+            values = getPartitionedState(stateId);
+            timerService =
+                    getInternalTimerService("end-key-timers", new VoidNamespaceSerializer(), this);
+        }
+
+        @Override
+        public void processElement(StreamRecord<IN> element) throws Exception {
+            IN value = element.getValue();
+            ACC currentValue = values.value();
+
+            if (currentValue == null) {
+                // Registers a timer for emitting the result at the end when this is the
+                // first input for this key.
+                timerService.registerEventTimeTimer(VoidNamespace.INSTANCE, Long.MAX_VALUE);
+                currentValue = userFunction.createAccumulator();
+            }
+
+            currentValue = userFunction.add(value, currentValue);
+            values.update(currentValue);
+        }
+
+        @Override
+        public void onEventTime(InternalTimer<K, VoidNamespace> timer) throws Exception {
+            ACC currentValue = values.value();
+            if (currentValue != null) {
+                output.collect(
+                        new StreamRecord<>(userFunction.getResult(currentValue), Long.MAX_VALUE));
+            }
+        }
+
+        @Override
+        public void onProcessingTime(InternalTimer<K, VoidNamespace> timer) throws Exception {}
     }
 
     /**

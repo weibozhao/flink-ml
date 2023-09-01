@@ -18,12 +18,9 @@
 
 package org.apache.flink.ml.feature.stringindexer;
 
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.common.param.HasHandleInvalid;
-import org.apache.flink.ml.util.ReadWriteUtils;
+import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.TestUtils;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -42,7 +39,11 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+import static org.apache.flink.ml.feature.stringindexer.StringIndexerParams.MAX_INDEX_NUM;
+import static org.apache.flink.ml.feature.stringindexer.StringIndexerParams.STRING_ORDER_TYPE;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -62,32 +63,34 @@ public class StringIndexerTest extends AbstractTestBase {
             Arrays.asList(
                     Row.of("a", 2.0, 0.0, 3.0),
                     Row.of("b", 1.0, 1.0, 2.0),
-                    Row.of("e", 2.0, 4.0, 3.0));
+                    Row.of("e", 2.0, 4.0, 3.0),
+                    Row.of("f", null, 4.0, 4.0),
+                    Row.of(null, null, 4.0, 4.0));
     private final List<Row> expectedAlphabeticDescPredictData =
             Arrays.asList(
                     Row.of("a", 2.0, 3.0, 0.0),
                     Row.of("b", 1.0, 2.0, 1.0),
-                    Row.of("e", 2.0, 4.0, 0.0));
+                    Row.of("e", 2.0, 4.0, 0.0),
+                    Row.of("f", null, 4.0, 4.0),
+                    Row.of(null, null, 4.0, 4.0));
     private final List<Row> expectedFreqAscPredictData =
             Arrays.asList(
                     Row.of("a", 2.0, 2.0, 3.0),
                     Row.of("b", 1.0, 3.0, 1.0),
-                    Row.of("e", 2.0, 4.0, 3.0));
+                    Row.of("e", 2.0, 4.0, 3.0),
+                    Row.of("f", null, 4.0, 4.0),
+                    Row.of(null, null, 4.0, 4.0));
     private final List<Row> expectedFreqDescPredictData =
             Arrays.asList(
                     Row.of("a", 2.0, 1.0, 0.0),
                     Row.of("b", 1.0, 0.0, 2.0),
-                    Row.of("e", 2.0, 4.0, 0.0));
+                    Row.of("e", 2.0, 4.0, 0.0),
+                    Row.of("f", null, 4.0, 4.0),
+                    Row.of(null, null, 4.0, 4.0));
 
     @Before
     public void before() {
-        Configuration config = new Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        env = StreamExecutionEnvironment.getExecutionEnvironment(config);
-        env.getConfig().enableObjectReuse();
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.noRestart());
+        env = TestUtils.getExecutionEnvironment();
         tEnv = StreamTableEnvironment.create(env);
 
         List<Row> trainData =
@@ -101,11 +104,20 @@ public class StringIndexerTest extends AbstractTestBase {
                         Row.of("b", 2.0),
                         Row.of("b", -1.0),
                         Row.of("a", -1.0),
-                        Row.of("c", -1.0));
+                        Row.of("c", -1.0),
+                        Row.of("d", null),
+                        Row.of(null, 2.0),
+                        Row.of(null, null));
         trainTable =
                 tEnv.fromDataStream(env.fromCollection(trainData)).as("inputCol1", "inputCol2");
 
-        List<Row> predictData = Arrays.asList(Row.of("a", 2.0), Row.of("b", 1.0), Row.of("e", 2.0));
+        List<Row> predictData =
+                Arrays.asList(
+                        Row.of("a", 2.0),
+                        Row.of("b", 1.0),
+                        Row.of("e", 2.0),
+                        Row.of("f", null),
+                        Row.of(null, null));
         predictTable =
                 tEnv.fromDataStream(env.fromCollection(predictData)).as("inputCol1", "inputCol2");
     }
@@ -115,16 +127,19 @@ public class StringIndexerTest extends AbstractTestBase {
         StringIndexer stringIndexer = new StringIndexer();
         assertEquals(stringIndexer.getStringOrderType(), StringIndexerParams.ARBITRARY_ORDER);
         assertEquals(stringIndexer.getHandleInvalid(), StringIndexerParams.ERROR_INVALID);
+        assertEquals(stringIndexer.getMaxIndexNum(), Integer.MAX_VALUE);
 
         stringIndexer
                 .setInputCols("inputCol1", "inputCol2")
                 .setOutputCols("outputCol1", "outputCol2")
                 .setStringOrderType(StringIndexerParams.ALPHABET_ASC_ORDER)
+                .setMaxIndexNum(100)
                 .setHandleInvalid(StringIndexerParams.SKIP_INVALID);
 
         assertArrayEquals(new String[] {"inputCol1", "inputCol2"}, stringIndexer.getInputCols());
         assertArrayEquals(new String[] {"outputCol1", "outputCol2"}, stringIndexer.getOutputCols());
         assertEquals(stringIndexer.getStringOrderType(), StringIndexerParams.ALPHABET_ASC_ORDER);
+        assertEquals(stringIndexer.getMaxIndexNum(), 100);
         assertEquals(stringIndexer.getHandleInvalid(), StringIndexerParams.SKIP_INVALID);
     }
 
@@ -191,12 +206,71 @@ public class StringIndexerTest extends AbstractTestBase {
             distinctStringsCol1.add(index);
             assertTrue(index >= 0 && index <= 4);
             index = (Double) r.getField(3);
-            assertTrue(index >= 0 && index <= 3);
+            assertTrue(index >= 0 && index <= 4);
             distinctStringsCol2.add(index);
         }
 
         assertEquals(3, distinctStringsCol1.size());
-        assertEquals(2, distinctStringsCol2.size());
+        assertEquals(3, distinctStringsCol2.size());
+    }
+
+    @Test
+    public void testMaxIndexNum() throws Exception {
+        StringIndexer stringIndexer =
+                new StringIndexer()
+                        .setMaxIndexNum(3)
+                        .setInputCols("inputCol1", "inputCol2")
+                        .setOutputCols("outputCol1", "outputCol2")
+                        .setHandleInvalid(StringIndexerParams.KEEP_INVALID);
+        Table output;
+        List<Row> predictedResult;
+        final String expectedErrorMessage =
+                "Setting "
+                        + MAX_INDEX_NUM.name
+                        + " smaller than INT.MAX only works when "
+                        + STRING_ORDER_TYPE.name
+                        + " is set as "
+                        + StringIndexerParams.FREQUENCY_DESC_ORDER
+                        + ".";
+
+        // AlphabetAsc order.
+        stringIndexer.setStringOrderType(StringIndexerParams.ALPHABET_ASC_ORDER);
+        checkMaxIndexNumSettings(stringIndexer, expectedErrorMessage);
+
+        // AlphabetDesc order.
+        stringIndexer.setStringOrderType(StringIndexerParams.ALPHABET_DESC_ORDER);
+        checkMaxIndexNumSettings(stringIndexer, expectedErrorMessage);
+
+        // FrequencyAsc order.
+        stringIndexer.setStringOrderType(StringIndexerParams.FREQUENCY_ASC_ORDER);
+        checkMaxIndexNumSettings(stringIndexer, expectedErrorMessage);
+
+        // FrequencyDesc order.
+        final List<Row> expectedPredictData =
+                Arrays.asList(
+                        Row.of("a", 2.0, 1.0, 0.0),
+                        Row.of("b", 1.0, 0.0, 2.0),
+                        Row.of("e", 2.0, 2.0, 0.0),
+                        Row.of("f", null, 2.0, 2.0),
+                        Row.of(null, null, 2.0, 2.0));
+        stringIndexer.setStringOrderType(StringIndexerParams.FREQUENCY_DESC_ORDER);
+        output = stringIndexer.fit(trainTable).transform(predictTable)[0];
+        predictedResult = IteratorUtils.toList(tEnv.toDataStream(output).executeAndCollect());
+        verifyPredictionResult(expectedPredictData, predictedResult);
+
+        // Arbitrary order.
+        stringIndexer.setStringOrderType(StringIndexerParams.ARBITRARY_ORDER);
+        checkMaxIndexNumSettings(stringIndexer, expectedErrorMessage);
+    }
+
+    private void checkMaxIndexNumSettings(
+            StringIndexer stringIndexer, String expectedErrorMessage) {
+        try {
+            stringIndexer.fit(trainTable);
+            fail();
+        } catch (Exception e) {
+            assertEquals(expectedErrorMessage, e.getMessage());
+        }
     }
 
     @Test
@@ -232,12 +306,18 @@ public class StringIndexerTest extends AbstractTestBase {
             IteratorUtils.toList(tEnv.toDataStream(output).executeAndCollect());
             fail();
         } catch (Throwable e) {
-            assertEquals(
-                    "The input contains unseen string: e. "
-                            + "See "
-                            + HasHandleInvalid.HANDLE_INVALID
-                            + " parameter for more options.",
-                    ExceptionUtils.getRootCause(e).getMessage());
+            List<String> expectedMessages =
+                    Stream.of("e", "f", "null")
+                            .map(
+                                    d ->
+                                            String.format(
+                                                    "The input contains unseen string: %s. See %s parameter for more options.",
+                                                    d, HasHandleInvalid.HANDLE_INVALID))
+                            .collect(Collectors.toList());
+            String actualMessage = ExceptionUtils.getRootCause(e).getMessage();
+            assertTrue(
+                    "Actual message is: " + actualMessage,
+                    expectedMessages.contains(actualMessage));
         }
     }
 
@@ -268,10 +348,18 @@ public class StringIndexerTest extends AbstractTestBase {
                         .setHandleInvalid(StringIndexerParams.KEEP_INVALID);
         stringIndexer =
                 TestUtils.saveAndReload(
-                        tEnv, stringIndexer, tempFolder.newFolder().getAbsolutePath());
+                        tEnv,
+                        stringIndexer,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        StringIndexer::load);
 
         StringIndexerModel model = stringIndexer.fit(trainTable);
-        model = TestUtils.saveAndReload(tEnv, model, tempFolder.newFolder().getAbsolutePath());
+        model =
+                TestUtils.saveAndReload(
+                        tEnv,
+                        model,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        StringIndexerModel::load);
 
         assertEquals(
                 Collections.singletonList("stringArrays"),
@@ -323,7 +411,7 @@ public class StringIndexerTest extends AbstractTestBase {
                         .fit(trainTable);
 
         StringIndexerModel newModel = new StringIndexerModel();
-        ReadWriteUtils.updateExistingParams(newModel, model.getParamMap());
+        ParamUtils.updateExistingParams(newModel, model.getParamMap());
         newModel.setModelData(model.getModelData());
         Table output = newModel.transform(predictTable)[0];
 

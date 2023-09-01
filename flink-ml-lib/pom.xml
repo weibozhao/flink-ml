@@ -23,13 +23,27 @@ under the License.
   <parent>
     <groupId>org.apache.flink</groupId>
     <artifactId>flink-ml-parent</artifactId>
-    <version>2.2-SNAPSHOT</version>
+    <version>2.2-1.0-SNAPSHOT</version>
   </parent>
 
   <artifactId>flink-ml-lib</artifactId>
   <name>Flink ML : Lib</name>
 
   <dependencies>
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-ml-servable-core</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-ml-servable-lib</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
     <dependency>
       <groupId>org.apache.flink</groupId>
       <artifactId>flink-ml-core</artifactId>
@@ -103,6 +117,42 @@ under the License.
       <version>${flink.version}</version>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-ml-core</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+      <type>test-jar</type>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-ml-servable-core</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+      <type>test-jar</type>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-ml-servable-lib</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+      <type>test-jar</type>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.collections</groupId>
+      <artifactId>eclipse-collections-api</artifactId>
+      <version>11.1.0</version>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.collections</groupId>
+      <artifactId>eclipse-collections</artifactId>
+      <version>11.1.0</version>
+    </dependency>
+    <dependency>
+      <groupId>it.unimi.dsi</groupId>
+      <artifactId>fastutil</artifactId>
+      <version>8.5.12</version>
+    </dependency>
   </dependencies>
 
   <build>
@@ -118,10 +168,22 @@ under the License.
               <goal>shade</goal>
             </goals>
             <configuration>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                  </excludes>
+                </filter>
+              </filters>
               <artifactSet>
                 <includes combine.children="append">
                   <include>com.github.wendykierp:JTransforms</include>
                   <include>pl.edu.icm:JLargeArrays</include>
+                  <include>org.eclipse.collections:eclipse-collections-api</include>
+                  <include>org.eclipse.collections:eclipse-collections</include>
                 </includes>
               </artifactSet>
             </configuration>

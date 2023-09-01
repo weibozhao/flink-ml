@@ -27,7 +27,6 @@ import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.MetricOptions;
 import org.apache.flink.contrib.streaming.state.RocksDBKeyedStateBackend;
-import org.apache.flink.core.memory.ManagedMemoryUseCase;
 import org.apache.flink.iteration.IterationListener;
 import org.apache.flink.iteration.IterationRecord;
 import org.apache.flink.iteration.operator.AbstractWrapperOperator;
@@ -35,6 +34,7 @@ import org.apache.flink.iteration.operator.OperatorStateUtils;
 import org.apache.flink.iteration.operator.OperatorUtils;
 import org.apache.flink.iteration.proxy.state.ProxyStateSnapshotContext;
 import org.apache.flink.iteration.proxy.state.ProxyStreamOperatorStateContext;
+import org.apache.flink.iteration.utils.CompatibilityUtils;
 import org.apache.flink.iteration.utils.ReflectionUtils;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.metrics.groups.OperatorMetricGroup;
@@ -166,7 +166,8 @@ public abstract class AbstractPerRoundWrapperOperator<T, S extends StreamOperato
                                             clonedOperatorFactory,
                                             (StreamTask) parameters.getContainingTask(),
                                             OperatorUtils.createWrappedOperatorConfig(
-                                                    parameters.getStreamConfig()),
+                                                    parameters.getStreamConfig(),
+                                                    containingTask.getUserCodeClassLoader()),
                                             proxyOutput,
                                             parameters.getOperatorEventDispatcher())
                                     .f0;
@@ -257,8 +258,8 @@ public abstract class AbstractPerRoundWrapperOperator<T, S extends StreamOperato
                         keySerializer,
                         containingTask.getCancelables(),
                         metrics,
-                        streamConfig.getManagedMemoryFractionOperatorUseCaseOfSlot(
-                                ManagedMemoryUseCase.STATE_BACKEND,
+                        CompatibilityUtils.getManagedMemoryFractionForStateBackend(
+                                streamConfig,
                                 containingTask
                                         .getEnvironment()
                                         .getTaskManagerInfo()

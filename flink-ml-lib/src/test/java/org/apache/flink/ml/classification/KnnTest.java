@@ -19,9 +19,7 @@
 package org.apache.flink.ml.classification;
 
 import org.apache.flink.api.common.functions.MapFunction;
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.classification.knn.Knn;
 import org.apache.flink.ml.classification.knn.KnnModel;
 import org.apache.flink.ml.classification.knn.KnnModelData;
@@ -29,10 +27,9 @@ import org.apache.flink.ml.linalg.DenseMatrix;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.linalg.Vectors;
-import org.apache.flink.ml.util.ReadWriteUtils;
+import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Schema;
@@ -95,13 +92,7 @@ public class KnnTest extends AbstractTestBase {
 
     @Before
     public void before() {
-        Configuration config = new Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        env = StreamExecutionEnvironment.getExecutionEnvironment(config);
-        env.getConfig().enableObjectReuse();
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.noRestart());
+        env = TestUtils.getExecutionEnvironment();
         tEnv = StreamTableEnvironment.create(env);
         Schema schema =
                 Schema.newBuilder()
@@ -204,10 +195,12 @@ public class KnnTest extends AbstractTestBase {
     public void testSaveLoadAndPredict() throws Exception {
         Knn knn = new Knn();
         Knn loadedKnn =
-                TestUtils.saveAndReload(tEnv, knn, tempFolder.newFolder().getAbsolutePath());
+                TestUtils.saveAndReload(
+                        tEnv, knn, tempFolder.newFolder().getAbsolutePath(), Knn::load);
         KnnModel knnModel = loadedKnn.fit(trainData);
         knnModel =
-                TestUtils.saveAndReload(tEnv, knnModel, tempFolder.newFolder().getAbsolutePath());
+                TestUtils.saveAndReload(
+                        tEnv, knnModel, tempFolder.newFolder().getAbsolutePath(), KnnModel::load);
         assertEquals(
                 Arrays.asList("packedFeatures", "featureNormSquares", "labels"),
                 knnModel.getModelData()[0].getResolvedSchema().getColumnNames());
@@ -220,7 +213,8 @@ public class KnnTest extends AbstractTestBase {
         Knn knn = new Knn();
         KnnModel knnModel = knn.fit(trainData);
         KnnModel newModel =
-                TestUtils.saveAndReload(tEnv, knnModel, tempFolder.newFolder().getAbsolutePath());
+                TestUtils.saveAndReload(
+                        tEnv, knnModel, tempFolder.newFolder().getAbsolutePath(), KnnModel::load);
         Table output = newModel.transform(predictData)[0];
         verifyPredictionResult(output, knn.getLabelCol(), knn.getPredictionCol());
     }
@@ -252,7 +246,7 @@ public class KnnTest extends AbstractTestBase {
         KnnModel modelA = knn.fit(trainData);
         Table modelData = modelA.getModelData()[0];
         KnnModel modelB = new KnnModel().setModelData(modelData);
-        ReadWriteUtils.updateExistingParams(modelB, modelA.getParamMap());
+        ParamUtils.updateExistingParams(modelB, modelA.getParamMap());
         Table output = modelB.transform(predictData)[0];
         verifyPredictionResult(output, knn.getLabelCol(), knn.getPredictionCol());
     }

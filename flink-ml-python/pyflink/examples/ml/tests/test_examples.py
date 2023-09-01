@@ -19,11 +19,13 @@
 import importlib
 import pkgutil
 
+from pyflink.datastream import StreamExecutionEnvironment, HashMapStateBackend
 from pyflink.ml.tests.test_utils import PyFlinkMLTestCase
 
 
 class ExamplesTest(PyFlinkMLTestCase):
     def test_examples(self):
+        StreamExecutionEnvironment.get_execution_environment = _get_execution_environment
         self.execute_all_in_module('pyflink.examples.ml.classification')
         self.execute_all_in_module('pyflink.examples.ml.clustering')
         self.execute_all_in_module('pyflink.examples.ml.evaluation')
@@ -36,3 +38,12 @@ class ExamplesTest(PyFlinkMLTestCase):
         for importer, sub_modname, ispkg in pkgutil.iter_modules(module.__path__):
             # importing an example module means executing the example.
             importlib.import_module(module.__name__ + "." + sub_modname)
+
+
+parent_get_execution_environment = StreamExecutionEnvironment.get_execution_environment
+
+
+def _get_execution_environment():
+    env = parent_get_execution_environment()
+    env.set_state_backend(HashMapStateBackend())
+    return env

@@ -49,8 +49,8 @@ import java.util.Map;
  * A Model which transforms input string/numeric column(s) to double column(s) using the model data
  * computed by {@link StringIndexer}.
  *
- * <p>The `keep` option of {@link HasHandleInvalid} means that we put the invalid entries in a
- * special bucket, whose index is the number of distinct values in this column.
+ * <p>The `keep` option of {@link HasHandleInvalid} means that we transform the invalid input into a
+ * special index, whose value is the number of distinct values in this column.
  */
 public class StringIndexerModel
         implements Model<StringIndexerModel>, StringIndexerModelParams<StringIndexerModel> {
@@ -167,7 +167,9 @@ public class StringIndexerModel
             for (int i = 0; i < inputCols.length; i++) {
                 Object objVal = input.getField(inputCols[i]);
                 String stringVal;
-                if (objVal instanceof String) {
+                if (null == objVal) {
+                    stringVal = null;
+                } else if (objVal instanceof String) {
                     stringVal = (String) objVal;
                 } else if (objVal instanceof Number) {
                     stringVal = String.valueOf(objVal);

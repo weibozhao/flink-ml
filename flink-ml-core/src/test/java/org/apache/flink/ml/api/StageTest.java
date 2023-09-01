@@ -49,10 +49,12 @@ import org.apache.flink.ml.param.WindowsParam;
 import org.apache.flink.ml.param.WithParams;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
+import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 
 import org.junit.Assert;
+import org.junit.Before;
 import org.junit.Test;
 
 import java.io.IOException;
@@ -65,6 +67,8 @@ import static org.junit.Assert.assertEquals;
 
 /** Tests the behavior of Stage and WithParams. */
 public class StageTest {
+
+    private StreamTableEnvironment tEnv;
 
     // A WithParams subclass which has one parameter for each pre-defined parameter type.
     private interface MyParams<T> extends WithParams<T> {
@@ -225,7 +229,7 @@ public class StageTest {
             throws IOException {
         for (Map.Entry<String, Object> entry : paramOverrides.entrySet()) {
             Param<?> param = stage.getParam(entry.getKey());
-            ReadWriteUtils.setParam(stage, param, entry.getValue());
+            ParamUtils.setParam(stage, param, entry.getValue());
         }
 
         String path = Files.createTempDirectory("").toString();
@@ -244,6 +248,12 @@ public class StageTest {
         }
         assertParamMapEquals(stage.getParamMap(), loadedStage.getParamMap());
         return loadedStage;
+    }
+
+    @Before
+    public void before() {
+        StreamExecutionEnvironment env = TestUtils.getExecutionEnvironment();
+        tEnv = StreamTableEnvironment.create(env);
     }
 
     @Test
@@ -392,8 +402,6 @@ public class StageTest {
 
     @Test
     public void testStageSaveLoad() throws IOException {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
         MyStage stage = new MyStage();
 
         stage.set(stage.paramWithNullDefault, 1);
@@ -457,8 +465,6 @@ public class StageTest {
 
     @Test
     public void testSaveLoadWithSpecialParams() throws IOException {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
         MyStage stage = new MyStage();
         stage.set(stage.paramWithNullDefault, 1);
 
@@ -487,8 +493,6 @@ public class StageTest {
 
     @Test
     public void testStageSaveLoadWithParamOverrides() throws IOException {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
         MyStage stage = new MyStage();
         stage.set(stage.paramWithNullDefault, 1);
         Stage<?> loadedStage =
@@ -499,8 +503,6 @@ public class StageTest {
 
     @Test
     public void testStageLoadWithoutLoadMethod() throws IOException {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
         MyStageWithoutLoad stage = new MyStageWithoutLoad();
         try {
             validateStageSaveLoad(tEnv, stage, Collections.emptyMap());
@@ -575,8 +577,6 @@ public class StageTest {
 
     @Test
     public void testSaveLoadWindowsParams() throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
         MyStage stage = new MyStage();
 
         Windows[] testWindows =

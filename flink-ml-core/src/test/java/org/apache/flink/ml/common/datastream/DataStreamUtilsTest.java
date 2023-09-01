@@ -22,11 +22,9 @@ import org.apache.flink.api.common.functions.AggregateFunction;
 import org.apache.flink.api.common.functions.MapPartitionFunction;
 import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.common.functions.RichMapPartitionFunction;
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.typeinfo.Types;
-import org.apache.flink.configuration.Configuration;
+import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.NumberSequenceIterator;
@@ -47,13 +45,7 @@ public class DataStreamUtilsTest {
 
     @Before
     public void before() {
-        Configuration config = new Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        env = StreamExecutionEnvironment.getExecutionEnvironment(config);
-        env.getConfig().enableObjectReuse();
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.noRestart());
+        env = TestUtils.getExecutionEnvironment();
     }
 
     @Test
@@ -106,6 +98,21 @@ public class DataStreamUtilsTest {
         stringSum = IteratorUtils.toList(result.executeAndCollect());
         assertEquals(1, stringSum.size());
         assertEquals(Integer.toString(190 + env.getParallelism()), stringSum.get(0));
+    }
+
+    @Test
+    public void testSample() throws Exception {
+        int numSamples = 10;
+        int[] totalMinusOneChoices = new int[] {0, 5, 9, 10, 11, 20, 30, 40, 200};
+        for (int totalMinusOne : totalMinusOneChoices) {
+            DataStream<Long> dataStream =
+                    env.fromParallelCollection(
+                            new NumberSequenceIterator(0L, totalMinusOne), Types.LONG);
+            DataStream<Long> result = DataStreamUtils.sample(dataStream, numSamples, 0);
+            //noinspection unchecked
+            List<String> sampled = IteratorUtils.toList(result.executeAndCollect());
+            assertEquals(Math.min(numSamples, totalMinusOne + 1), sampled.size());
+        }
     }
 
     @Test

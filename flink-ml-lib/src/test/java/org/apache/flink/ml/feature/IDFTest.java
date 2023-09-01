@@ -18,16 +18,13 @@
 
 package org.apache.flink.ml.feature;
 
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.feature.idf.IDF;
 import org.apache.flink.ml.feature.idf.IDFModel;
 import org.apache.flink.ml.feature.idf.IDFModelData;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.Vectors;
-import org.apache.flink.ml.util.ReadWriteUtils;
+import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.TestUtils;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -71,13 +68,7 @@ public class IDFTest extends AbstractTestBase {
 
     @Before
     public void before() {
-        Configuration config = new Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        env = StreamExecutionEnvironment.getExecutionEnvironment(config);
-        env.getConfig().enableObjectReuse();
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.noRestart());
+        env = TestUtils.getExecutionEnvironment();
         tEnv = StreamTableEnvironment.create(env);
 
         List<DenseVector> input =
@@ -150,10 +141,14 @@ public class IDFTest extends AbstractTestBase {
     @Test
     public void testSaveLoadAndPredict() throws Exception {
         IDF idf = new IDF();
-        idf = TestUtils.saveAndReload(tEnv, idf, tempFolder.newFolder().getAbsolutePath());
+        idf =
+                TestUtils.saveAndReload(
+                        tEnv, idf, tempFolder.newFolder().getAbsolutePath(), IDF::load);
 
         IDFModel model = idf.fit(inputTable);
-        model = TestUtils.saveAndReload(tEnv, model, tempFolder.newFolder().getAbsolutePath());
+        model =
+                TestUtils.saveAndReload(
+                        tEnv, model, tempFolder.newFolder().getAbsolutePath(), IDFModel::load);
 
         assertEquals(
                 Arrays.asList("idf", "docFreq", "numDocs"),
@@ -192,7 +187,7 @@ public class IDFTest extends AbstractTestBase {
         IDFModel model = new IDF().fit(inputTable);
 
         IDFModel newModel = new IDFModel();
-        ReadWriteUtils.updateExistingParams(newModel, model.getParamMap());
+        ParamUtils.updateExistingParams(newModel, model.getParamMap());
         newModel.setModelData(model.getModelData());
         Table output = newModel.transform(inputTable)[0];
 

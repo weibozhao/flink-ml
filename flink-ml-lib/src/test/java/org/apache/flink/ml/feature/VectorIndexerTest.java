@@ -18,16 +18,13 @@
 
 package org.apache.flink.ml.feature;
 
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.common.param.HasHandleInvalid;
 import org.apache.flink.ml.feature.vectorindexer.VectorIndexer;
 import org.apache.flink.ml.feature.vectorindexer.VectorIndexerModel;
 import org.apache.flink.ml.feature.vectorindexer.VectorIndexerModelData;
 import org.apache.flink.ml.linalg.Vectors;
-import org.apache.flink.ml.util.ReadWriteUtils;
+import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.TestUtils;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Expressions;
 import org.apache.flink.table.api.Table;
@@ -61,13 +58,7 @@ public class VectorIndexerTest extends AbstractTestBase {
 
     @Before
     public void before() {
-        Configuration config = new Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        env = StreamExecutionEnvironment.getExecutionEnvironment(config);
-        env.getConfig().enableObjectReuse();
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.noRestart());
+        env = TestUtils.getExecutionEnvironment();
         tEnv = StreamTableEnvironment.create(env);
 
         List<Row> trainInput =
@@ -207,10 +198,18 @@ public class VectorIndexerTest extends AbstractTestBase {
                 new VectorIndexer().setHandleInvalid(HasHandleInvalid.KEEP_INVALID);
         vectorIndexer =
                 TestUtils.saveAndReload(
-                        tEnv, vectorIndexer, tempFolder.newFolder().getAbsolutePath());
+                        tEnv,
+                        vectorIndexer,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        VectorIndexer::load);
 
         VectorIndexerModel model = vectorIndexer.fit(trainInputTable);
-        model = TestUtils.saveAndReload(tEnv, model, tempFolder.newFolder().getAbsolutePath());
+        model =
+                TestUtils.saveAndReload(
+                        tEnv,
+                        model,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        VectorIndexerModel::load);
 
         assertEquals(
                 Collections.singletonList("categoryMaps"),
@@ -259,7 +258,7 @@ public class VectorIndexerTest extends AbstractTestBase {
         VectorIndexerModel model = vectorIndexer.fit(trainInputTable);
 
         VectorIndexerModel newModel = new VectorIndexerModel();
-        ReadWriteUtils.updateExistingParams(newModel, model.getParamMap());
+        ParamUtils.updateExistingParams(newModel, model.getParamMap());
         newModel.setModelData(model.getModelData());
         Table output = newModel.transform(testInputTable)[0];
 

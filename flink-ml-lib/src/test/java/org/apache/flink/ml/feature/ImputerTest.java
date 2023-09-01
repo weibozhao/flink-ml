@@ -18,13 +18,10 @@
 
 package org.apache.flink.ml.feature;
 
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.feature.imputer.Imputer;
 import org.apache.flink.ml.feature.imputer.ImputerModel;
 import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -114,13 +111,7 @@ public class ImputerTest extends AbstractTestBase {
 
     @Before
     public void before() {
-        Configuration config = new Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        env = StreamExecutionEnvironment.getExecutionEnvironment(config);
-        env.getConfig().enableObjectReuse();
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.noRestart());
+        env = TestUtils.getExecutionEnvironment();
         tEnv = StreamTableEnvironment.create(env);
 
         trainDataTable =
@@ -222,10 +213,12 @@ public class ImputerTest extends AbstractTestBase {
                         .setInputCols("f1", "f2", "f3", "f4")
                         .setOutputCols("o1", "o2", "o3", "o4");
         Imputer loadedImputer =
-                TestUtils.saveAndReload(tEnv, imputer, tempFolder.newFolder().getAbsolutePath());
+                TestUtils.saveAndReload(
+                        tEnv, imputer, tempFolder.newFolder().getAbsolutePath(), Imputer::load);
         ImputerModel model = loadedImputer.fit(trainDataTable);
         ImputerModel loadedModel =
-                TestUtils.saveAndReload(tEnv, model, tempFolder.newFolder().getAbsolutePath());
+                TestUtils.saveAndReload(
+                        tEnv, model, tempFolder.newFolder().getAbsolutePath(), ImputerModel::load);
         assertEquals(
                 Collections.singletonList("surrogates"),
                 model.getModelData()[0].getResolvedSchema().getColumnNames());
@@ -265,9 +258,7 @@ public class ImputerTest extends AbstractTestBase {
         final List<Row> trainData =
                 new ArrayList<>(
                         Arrays.asList(
-                                Row.of(Double.NaN, Float.NaN),
-                                Row.of(null, null),
-                                Row.of(1.0, 1.0f)));
+                                Row.of(Double.NaN, 3.0f), Row.of(null, 2.0f), Row.of(1.0, 1.0f)));
         trainDataTable = tEnv.fromDataStream(env.fromCollection(trainData)).as("f1", "f2");
         Imputer imputer =
                 new Imputer()

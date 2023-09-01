@@ -20,6 +20,7 @@ package org.apache.flink.ml.common.datastream;
 
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.typeinfo.Types;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.ml.linalg.DenseMatrix;
 import org.apache.flink.ml.linalg.DenseVector;
@@ -27,6 +28,7 @@ import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.linalg.typeinfo.DenseMatrixTypeInfo;
 import org.apache.flink.ml.linalg.typeinfo.DenseVectorTypeInfo;
 import org.apache.flink.ml.linalg.typeinfo.SparseVectorTypeInfo;
+import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.DataTypes;
@@ -55,7 +57,7 @@ public class TableUtilsTest {
 
     @Before
     public void before() {
-        env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env = TestUtils.getExecutionEnvironment();
         tEnv = StreamTableEnvironment.create(env);
     }
 
@@ -118,6 +120,12 @@ public class TableUtilsTest {
         dataFields.add(new SparseVector(2, new int[] {0}, new double[] {0.1}));
         preDefinedDataTypes.add(DataTypes.RAW(DenseMatrixTypeInfo.INSTANCE));
         dataFields.add(new DenseMatrix(2, 2));
+        preDefinedDataTypes.add(
+                DataTypes.STRUCTURED(
+                        Tuple2.class,
+                        DataTypes.FIELD("f0", DataTypes.BIGINT()),
+                        DataTypes.FIELD("f1", DataTypes.BIGINT())));
+        dataFields.add(Tuple2.of(1L, 2L));
 
         Schema.Builder builder = Schema.newBuilder();
         for (int i = 0; i < preDefinedDataTypes.size(); i++) {

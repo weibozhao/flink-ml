@@ -35,6 +35,7 @@ import org.apache.flink.iteration.operator.OperatorStateUtils;
 import org.apache.flink.ml.api.AlgoOperator;
 import org.apache.flink.ml.common.broadcast.BroadcastUtils;
 import org.apache.flink.ml.common.datastream.DataStreamUtils;
+import org.apache.flink.ml.common.datastream.purefunc.MapWithBcPureFunc;
 import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
@@ -195,7 +196,8 @@ public class BinaryClassificationEvaluator
                         });
 
         DataStream<Map<String, Double>> metrics =
-                DataStreamUtils.mapPartition(localMetrics, new MergeMetrics());
+                DataStreamUtils.mapPartition(
+                        localMetrics, new MergeMetrics(), Types.MAP(Types.STRING, Types.DOUBLE));
         metrics.getTransformation().setParallelism(1);
 
         final String[] metricsNames = getMetricsNames();
@@ -492,7 +494,7 @@ public class BinaryClassificationEvaluator
      * @param taskId current taskId.
      * @return [curTrue, curFalse, TotalTrue, TotalFalse]
      */
-    private static long[] reduceBinarySummary(List<BinarySummary> values, int taskId) {
+    static long[] reduceBinarySummary(List<BinarySummary> values, int taskId) {
         List<BinarySummary> list = new ArrayList<>(values);
         list.sort(Comparator.comparingDouble(t -> -t.maxScore));
         long curTrue = 0;
@@ -517,7 +519,7 @@ public class BinaryClassificationEvaluator
      * @param statistics Binary summary.
      * @param evalElement evaluated element.
      */
-    private static void updateBinarySummary(
+    static void updateBinarySummary(
             BinarySummary statistics, Tuple3<Double, Boolean, Double> evalElement) {
         if (evalElement.f1) {
             statistics.curPositive++;
@@ -529,15 +531,34 @@ public class BinaryClassificationEvaluator
         }
     }
 
+    static class AppendTaskIdPureFunc
+            implements MapWithBcPureFunc<
+                    Tuple3<Double, Boolean, Double>,
+                    Tuple4<Double, Boolean, Double, Integer>,
+                    double[]> {
+        @Override
+        public Tuple4<Double, Boolean, Double, Integer> map(
+                Tuple3<Double, Boolean, Double> value, double[] boundaryRange) {
+            for (int i = boundaryRange.length - 1; i > 0; --i) {
+                if (value.f0 > boundaryRange[i]) {
+                    return Tuple4.of(value.f0, value.f1, value.f2, i);
+                }
+            }
+            return Tuple4.of(value.f0, value.f1, value.f2, 0);
+        }
+    }
+
     /**
      * Appends taskId for every sample as range defined. If sample score between range[i] and
      * range[i+1], taskId is i.
      */
-    private static class AppendTaskId
+    // TODO: add DataStreamUtils#MapWithBc
+    public static class AppendTaskId
             extends RichMapFunction<
                     Tuple3<Double, Boolean, Double>, Tuple4<Double, Boolean, Double, Integer>> {
-        private double[] boundaryRange;
         private final String boundaryRangeKey;
+        private double[] boundaryRange;
+        private transient AppendTaskIdPureFunc func;
 
         public AppendTaskId(String boundaryRangeKey) {
             this.boundaryRangeKey = boundaryRangeKey;
@@ -550,13 +571,9 @@ public class BinaryClassificationEvaluator
                 boundaryRange =
                         (double[])
                                 getRuntimeContext().getBroadcastVariable(boundaryRangeKey).get(0);
+                func = new AppendTaskIdPureFunc();
             }
-            for (int i = boundaryRange.length - 1; i > 0; --i) {
-                if (value.f0 > boundaryRange[i]) {
-                    return Tuple4.of(value.f0, value.f1, value.f2, i);
-                }
-            }
-            return Tuple4.of(value.f0, value.f1, value.f2, 0);
+            return func.map(value, boundaryRange);
         }
     }
 
@@ -575,6 +592,60 @@ public class BinaryClassificationEvaluator
         return paramMap;
     }
 
+    static class SampleScoreFunction
+            implements MapPartitionFunction<Tuple3<Double, Boolean, Double>, double[]> {
+        @Override
+        public void mapPartition(
+                Iterable<Tuple3<Double, Boolean, Double>> dataPoints, Collector<double[]> out) {
+            List<Double> bufferedDataPoints = new ArrayList<>();
+            for (Tuple3<Double, Boolean, Double> dataPoint : dataPoints) {
+                bufferedDataPoints.add(dataPoint.f0);
+            }
+            if (bufferedDataPoints.size() == 0) {
+                return;
+            }
+            double[] sampleScores = new double[NUM_SAMPLE_FOR_RANGE_PARTITION];
+            Arrays.fill(sampleScores, Double.MAX_VALUE);
+            Random rand = new Random();
+            int sampleNum = bufferedDataPoints.size();
+            if (sampleNum > 0) {
+                for (int i = 0; i < NUM_SAMPLE_FOR_RANGE_PARTITION; ++i) {
+                    sampleScores[i] = bufferedDataPoints.get(rand.nextInt(sampleNum));
+                }
+            }
+            out.collect(sampleScores);
+        }
+    }
+
+    static class CalcBoundaryRangeFunction implements MapPartitionFunction<double[], double[]> {
+        private final int parallelism;
+
+        public CalcBoundaryRangeFunction(int parallelism) {
+            this.parallelism = parallelism;
+        }
+
+        @Override
+        public void mapPartition(Iterable<double[]> dataPoints, Collector<double[]> out) {
+            double[] allSampleScore = new double[parallelism * NUM_SAMPLE_FOR_RANGE_PARTITION];
+            int cnt = 0;
+            for (double[] dataPoint : dataPoints) {
+                System.arraycopy(
+                        dataPoint,
+                        0,
+                        allSampleScore,
+                        cnt * NUM_SAMPLE_FOR_RANGE_PARTITION,
+                        NUM_SAMPLE_FOR_RANGE_PARTITION);
+                cnt++;
+            }
+            Arrays.sort(allSampleScore);
+            double[] boundaryRange = new double[parallelism];
+            for (int i = 0; i < parallelism; ++i) {
+                boundaryRange[i] = allSampleScore[i * NUM_SAMPLE_FOR_RANGE_PARTITION];
+            }
+            out.collect(boundaryRange);
+        }
+    }
+
     /**
      * Calculates boundary range for rangePartition.
      *
@@ -584,65 +655,17 @@ public class BinaryClassificationEvaluator
     private static DataStream<double[]> getBoundaryRange(
             DataStream<Tuple3<Double, Boolean, Double>> evalData) {
         DataStream<double[]> sampleScoreStream =
-                DataStreamUtils.mapPartition(
-                        evalData,
-                        new MapPartitionFunction<Tuple3<Double, Boolean, Double>, double[]>() {
-                            @Override
-                            public void mapPartition(
-                                    Iterable<Tuple3<Double, Boolean, Double>> dataPoints,
-                                    Collector<double[]> out) {
-                                List<Double> bufferedDataPoints = new ArrayList<>();
-                                for (Tuple3<Double, Boolean, Double> dataPoint : dataPoints) {
-                                    bufferedDataPoints.add(dataPoint.f0);
-                                }
-                                double[] sampleScores = new double[NUM_SAMPLE_FOR_RANGE_PARTITION];
-                                Arrays.fill(sampleScores, Double.MAX_VALUE);
-                                Random rand = new Random();
-                                int sampleNum = bufferedDataPoints.size();
-                                if (sampleNum > 0) {
-                                    for (int i = 0; i < NUM_SAMPLE_FOR_RANGE_PARTITION; ++i) {
-                                        sampleScores[i] =
-                                                bufferedDataPoints.get(rand.nextInt(sampleNum));
-                                    }
-                                }
-                                out.collect(sampleScores);
-                            }
-                        });
+                DataStreamUtils.mapPartition(evalData, new SampleScoreFunction());
         final int parallel = sampleScoreStream.getParallelism();
 
         DataStream<double[]> boundaryRange =
                 DataStreamUtils.mapPartition(
-                        sampleScoreStream,
-                        new MapPartitionFunction<double[], double[]>() {
-                            @Override
-                            public void mapPartition(
-                                    Iterable<double[]> dataPoints, Collector<double[]> out) {
-                                double[] allSampleScore =
-                                        new double[parallel * NUM_SAMPLE_FOR_RANGE_PARTITION];
-                                int cnt = 0;
-                                for (double[] dataPoint : dataPoints) {
-                                    System.arraycopy(
-                                            dataPoint,
-                                            0,
-                                            allSampleScore,
-                                            cnt * NUM_SAMPLE_FOR_RANGE_PARTITION,
-                                            NUM_SAMPLE_FOR_RANGE_PARTITION);
-                                    cnt++;
-                                }
-                                Arrays.sort(allSampleScore);
-                                double[] boundaryRange = new double[parallel];
-                                for (int i = 0; i < parallel; ++i) {
-                                    boundaryRange[i] =
-                                            allSampleScore[i * NUM_SAMPLE_FOR_RANGE_PARTITION];
-                                }
-                                out.collect(boundaryRange);
-                            }
-                        });
+                        sampleScoreStream, new CalcBoundaryRangeFunction(parallel));
         boundaryRange.getTransformation().setParallelism(1);
         return boundaryRange;
     }
 
-    private static class ParseSample implements MapFunction<Row, Tuple3<Double, Boolean, Double>> {
+    static class ParseSample implements MapFunction<Row, Tuple3<Double, Boolean, Double>> {
         private final String labelCol;
         private final String rawPredictionCol;
         private final String weightCol;
@@ -668,14 +691,16 @@ public class BinaryClassificationEvaluator
     }
 
     /** Binary Summary of data in one worker. */
-    private static class BinarySummary implements Serializable {
-        private final Integer taskId;
+    public static class BinarySummary implements Serializable {
+        public Integer taskId;
         // maximum score in this partition
-        private double maxScore;
+        public double maxScore;
         // real positives in this partition
-        private long curPositive;
+        public long curPositive;
         // real negatives in this partition
-        private long curNegative;
+        public long curNegative;
+
+        public BinarySummary() {}
 
         public BinarySummary(Integer taskId, double maxScore, long curPositive, long curNegative) {
             this.taskId = taskId;
@@ -686,21 +711,23 @@ public class BinaryClassificationEvaluator
     }
 
     /** The evaluation metrics for binary classification. */
-    private static class BinaryMetrics {
+    public static class BinaryMetrics {
         /* The count of samples. */
-        private long count;
+        public long count;
 
         /* Area under ROC */
-        private final double areaUnderROC;
+        public double areaUnderROC;
 
         /* Area under Lorenz */
-        private double areaUnderLorenz;
+        public double areaUnderLorenz;
 
         /* Area under PRC */
-        private double areaUnderPR;
+        public double areaUnderPR;
 
         /* KS */
-        private double ks;
+        public double ks;
+
+        public BinaryMetrics() {}
 
         public BinaryMetrics(long count, double areaUnderROC) {
             this.count = count;

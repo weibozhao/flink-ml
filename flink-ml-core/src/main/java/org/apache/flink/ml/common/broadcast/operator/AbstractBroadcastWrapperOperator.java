@@ -23,13 +23,13 @@ import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.core.memory.ManagedMemoryUseCase;
 import org.apache.flink.iteration.datacache.nonkeyed.DataCacheReader;
 import org.apache.flink.iteration.datacache.nonkeyed.DataCacheSnapshot;
 import org.apache.flink.iteration.datacache.nonkeyed.DataCacheWriter;
 import org.apache.flink.iteration.datacache.nonkeyed.Segment;
 import org.apache.flink.iteration.operator.OperatorUtils;
 import org.apache.flink.iteration.proxy.state.ProxyStreamOperatorStateContext;
+import org.apache.flink.iteration.utils.CompatibilityUtils;
 import org.apache.flink.metrics.groups.OperatorMetricGroup;
 import org.apache.flink.ml.common.broadcast.BroadcastContext;
 import org.apache.flink.ml.common.broadcast.BroadcastStreamingRuntimeContext;
@@ -451,8 +451,8 @@ public abstract class AbstractBroadcastWrapperOperator<T, S extends StreamOperat
                         keySerializer,
                         containingTask.getCancelables(),
                         metrics,
-                        streamConfig.getManagedMemoryFractionOperatorUseCaseOfSlot(
-                                ManagedMemoryUseCase.STATE_BACKEND,
+                        CompatibilityUtils.getManagedMemoryFractionForStateBackend(
+                                streamConfig,
                                 containingTask
                                         .getEnvironment()
                                         .getTaskManagerInfo()

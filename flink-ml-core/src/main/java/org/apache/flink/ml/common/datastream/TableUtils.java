@@ -31,7 +31,9 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.types.Row;
 
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 /** Utility class for operations related to Table API. */
@@ -58,6 +60,7 @@ public class TableUtils {
         LOGICAL_TYPE_ROOTS_USING_EXTERNAL_TYPE_INFO.add(LogicalTypeRoot.MAP);
         LOGICAL_TYPE_ROOTS_USING_EXTERNAL_TYPE_INFO.add(LogicalTypeRoot.MULTISET);
         LOGICAL_TYPE_ROOTS_USING_EXTERNAL_TYPE_INFO.add(LogicalTypeRoot.ROW);
+        LOGICAL_TYPE_ROOTS_USING_EXTERNAL_TYPE_INFO.add(LogicalTypeRoot.STRUCTURED_TYPE);
     }
 
     // Constructs a RowTypeInfo from the given schema. Currently, this function does not support
@@ -83,6 +86,21 @@ public class TableUtils {
             }
         }
         return null;
+    }
+
+    public static int[] getColumnIndexes(ResolvedSchema schema, String[] columnNames) {
+        Map<String, Integer> nameToIndex = new HashMap<>();
+        int[] result = new int[columnNames.length];
+
+        for (int i = 0; i < schema.getColumnCount(); i++) {
+            Column column = schema.getColumn(i).get();
+            nameToIndex.put(column.getName(), i);
+        }
+
+        for (int i = 0; i < columnNames.length; i++) {
+            result[i] = nameToIndex.get(columnNames[i]);
+        }
+        return result;
     }
 
     public static StreamExecutionEnvironment getExecutionEnvironment(StreamTableEnvironment tEnv) {

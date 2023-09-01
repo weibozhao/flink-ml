@@ -226,7 +226,8 @@ public class HeadOperator extends AbstractStreamOperator<IterationRecord<?>>
                 context.getOperatorStateStore()
                         .getListState(
                                 new ListStateDescriptor<>(
-                                        "processorState", HeadOperatorState.class));
+                                        "processorState", HeadOperatorState.TYPE_INFO));
+
         OperatorStateUtils.getUniqueElement(processorState, "processorState")
                 .ifPresent(
                         headOperatorState ->
@@ -565,7 +566,7 @@ public class HeadOperator extends AbstractStreamOperator<IterationRecord<?>>
 
         private MailboxExecutorWithYieldTimeout(MailboxExecutor mailboxExecutor) {
             this.mailboxExecutor = mailboxExecutor;
-            this.timer = new Timer();
+            this.timer = new Timer(true);
         }
 
         @Override

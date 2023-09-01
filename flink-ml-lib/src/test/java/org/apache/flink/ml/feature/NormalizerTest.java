@@ -18,14 +18,11 @@
 
 package org.apache.flink.ml.feature;
 
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.feature.normalizer.Normalizer;
 import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.linalg.Vectors;
 import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -93,14 +90,7 @@ public class NormalizerTest extends AbstractTestBase {
 
     @Before
     public void before() {
-        Configuration config = new Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(config);
-        env.getConfig().enableObjectReuse();
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.noRestart());
-
+        StreamExecutionEnvironment env = TestUtils.getExecutionEnvironment();
         tEnv = StreamTableEnvironment.create(env);
         DataStream<Row> dataStream = env.fromCollection(INPUT_DATA);
         inputDataTable = tEnv.fromDataStream(dataStream).as("denseVec", "sparseVec");
@@ -154,7 +144,10 @@ public class NormalizerTest extends AbstractTestBase {
 
         Normalizer loadedNormalizer =
                 TestUtils.saveAndReload(
-                        tEnv, normalizer, TEMPORARY_FOLDER.newFolder().getAbsolutePath());
+                        tEnv,
+                        normalizer,
+                        TEMPORARY_FOLDER.newFolder().getAbsolutePath(),
+                        Normalizer::load);
 
         Table output = loadedNormalizer.transform(inputDataTable)[0];
         verifyOutputResult(output, loadedNormalizer.getOutputCol(), EXPECTED_DENSE_OUTPUT);

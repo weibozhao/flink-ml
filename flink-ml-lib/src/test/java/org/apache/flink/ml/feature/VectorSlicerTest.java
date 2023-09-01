@@ -18,15 +18,12 @@
 
 package org.apache.flink.ml.feature;
 
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.feature.vectorslicer.VectorSlicer;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.linalg.Vectors;
 import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -72,13 +69,7 @@ public class VectorSlicerTest extends AbstractTestBase {
 
     @Before
     public void before() {
-        Configuration config = new Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(config);
-        env.getConfig().enableObjectReuse();
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.noRestart());
+        StreamExecutionEnvironment env = TestUtils.getExecutionEnvironment();
         tEnv = StreamTableEnvironment.create(env);
         DataStream<Row> dataStream = env.fromCollection(INPUT_DATA);
         inputDataTable = tEnv.fromDataStream(dataStream).as("id", "vec", "sparseVec");
@@ -125,7 +116,10 @@ public class VectorSlicerTest extends AbstractTestBase {
                 new VectorSlicer().setInputCol("vec").setOutputCol("sliceVec").setIndices(0, 1, 2);
         VectorSlicer loadedVectorSlicer =
                 TestUtils.saveAndReload(
-                        tEnv, vectorSlicer, TEMPORARY_FOLDER.newFolder().getAbsolutePath());
+                        tEnv,
+                        vectorSlicer,
+                        TEMPORARY_FOLDER.newFolder().getAbsolutePath(),
+                        VectorSlicer::load);
         Table output = loadedVectorSlicer.transform(inputDataTable)[0];
         verifyOutputResult(output, loadedVectorSlicer.getOutputCol(), false);
     }

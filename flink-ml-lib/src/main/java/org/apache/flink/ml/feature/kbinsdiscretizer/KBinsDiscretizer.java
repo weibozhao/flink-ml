@@ -36,6 +36,7 @@ import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
 
+import org.apache.commons.lang3.ArrayUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -61,13 +62,16 @@ import java.util.Set;
  *
  * <ul>
  *   <li>When the input values of one column are all the same, then they should be mapped to the
- *       same bin (i.e., the zero-th bin). Thus the corresponding bin edges are `{Double.MIN_VALUE,
- *       Double.MAX_VALUE}`.
+ *       same bin (i.e., the zero-th bin). Thus the corresponding bin edges are
+ *       `{Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY}`.
  *   <li>When the number of distinct values of one column is less than the specified number of bins
  *       and the {@link KBinsDiscretizerParams#STRATEGY} is set as {@link
  *       KBinsDiscretizerParams#KMEANS}, we switch to {@link KBinsDiscretizerParams#UNIFORM}.
  *   <li>When the width of one output bin is zero, i.e., the left edge equals to the right edge of
- *       the bin, we remove it.
+ *       the bin, we replace the right edge as the average value of its two neighbors. One exception
+ *       is that the last two edges are the same --- in this case, the left edge is updated as the
+ *       average of its two neighbors. For example, the bin edges {0, 1, 1, 2, 2} are transformed
+ *       into {0, 1, 1.5, 1.75, 2}.
  * </ul>
  */
 public class KBinsDiscretizer
@@ -123,6 +127,7 @@ public class KBinsDiscretizer
                             public void mapPartition(
                                     Iterable<DenseVector> iterable,
                                     Collector<KBinsDiscretizerModelData> collector) {
+                                long start = System.currentTimeMillis();
                                 List<DenseVector> list = new ArrayList<>();
                                 iterable.iterator().forEachRemaining(list::add);
 
@@ -149,6 +154,8 @@ public class KBinsDiscretizer
                                                         + strategy
                                                         + ".");
                                 }
+                                long elapsedTime = System.currentTimeMillis() - start;
+                                LOG.info("Find bin edges costs: {} ms.", elapsedTime);
 
                                 collector.collect(new KBinsDiscretizerModelData(binEdges));
                             }
@@ -157,7 +164,7 @@ public class KBinsDiscretizer
 
         KBinsDiscretizerModel model =
                 new KBinsDiscretizerModel().setModelData(tEnv.fromDataStream(modelData));
-        ReadWriteUtils.updateExistingParams(model, getParamMap());
+        ParamUtils.updateExistingParams(model, getParamMap());
         return model;
     }
 
@@ -188,7 +195,8 @@ public class KBinsDiscretizer
             double max = maxVector.get(columnId);
             if (min == max) {
                 LOG.warn("Feature " + columnId + " is constant and the output will all be zero.");
-                binEdges[columnId] = new double[] {Double.MIN_VALUE, Double.MAX_VALUE};
+                binEdges[columnId] =
+                        new double[] {Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY};
             } else {
                 double width = (max - min) / numBins;
                 binEdges[columnId] = new double[numBins + 1];
@@ -206,35 +214,77 @@ public class KBinsDiscretizer
         int numColumns = input.get(0).size();
         int numData = input.size();
         double[][] binEdges = new double[numColumns][];
-        double[] features = new double[numData];
 
         for (int columnId = 0; columnId < numColumns; columnId++) {
+            double[] features = new double[numData];
             for (int i = 0; i < numData; i++) {
                 features[i] = input.get(i).get(columnId);
             }
             Arrays.sort(features);
 
-            if (features[0] == features[numData - 1]) {
-                LOG.warn("Feature " + columnId + " is constant and the output will all be zero.");
-                binEdges[columnId] = new double[] {Double.MIN_VALUE, Double.MAX_VALUE};
-            } else {
-                double width = 1.0 * features.length / numBins;
-                double[] tempBinEdges = new double[numBins + 1];
-
-                for (int binEdgeId = 0; binEdgeId < numBins; binEdgeId++) {
-                    tempBinEdges[binEdgeId] = features[(int) (binEdgeId * width)];
+            {
+                int validRange = numData;
+                while (validRange > 0 && Double.isNaN(features[validRange - 1])) {
+                    validRange -= 1;
                 }
-                tempBinEdges[numBins] = features[numData - 1];
-
-                // Removes bins that are empty, i.e., the left edge equals to the right edge.
-                Set<Double> edges = new HashSet<>(numBins);
-                for (double edge : tempBinEdges) {
-                    edges.add(edge);
+                if (validRange < numData) {
+                    features = ArrayUtils.subarray(features, 0, validRange);
                 }
-
-                binEdges[columnId] = edges.stream().mapToDouble(Double::doubleValue).toArray();
-                Arrays.sort(binEdges[columnId]);
             }
+
+            if (features[0] == features[features.length - 1]) {
+                LOG.warn("Feature " + columnId + " is constant and the output will all be zero.");
+                binEdges[columnId] =
+                        new double[] {Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY};
+            } else {
+                binEdges[columnId] = removeDuplicatedBinEdges(features, numBins);
+            }
+        }
+        return binEdges;
+    }
+
+    public static double[] removeDuplicatedBinEdges(double[] features, int numBins) {
+        double[] binEdges;
+        if (features.length > numBins) {
+            double width = 1.0 * features.length / numBins;
+            binEdges = new double[numBins + 1];
+
+            for (int binEdgeId = 0; binEdgeId < numBins; binEdgeId++) {
+                binEdges[binEdgeId] = features[(int) (binEdgeId * width)];
+            }
+            binEdges[numBins] = features[features.length - 1];
+        } else {
+            binEdges = features;
+        }
+
+        // Bins with zero width should be converted to a non-empty bin.
+        Map<Double, Integer> edgesAndCnt = new HashMap<>(numBins);
+        for (double edge : binEdges) {
+            edgesAndCnt.put(edge, edgesAndCnt.getOrDefault(edge, 0) + 1);
+        }
+        List<Double> edges = new ArrayList<>();
+        for (Map.Entry<Double, Integer> edgeAndCnt : edgesAndCnt.entrySet()) {
+            double edge = edgeAndCnt.getKey();
+            int cnt = edgeAndCnt.getValue();
+            edges.add(edge);
+            if (cnt > 1) {
+                edges.add(edge);
+            }
+        }
+        binEdges = edges.stream().mapToDouble(Double::doubleValue).toArray();
+        Arrays.sort(binEdges);
+        int i = 1;
+        // If there are two consecutive bin edges with the same value, we update the right
+        // edge as the average of its two neighbors.
+        for (; i < binEdges.length - 1; i++) {
+            if (binEdges[i] == binEdges[i - 1]) {
+                binEdges[i] = (binEdges[i + 1] + binEdges[i - 1]) / 2;
+            }
+        }
+        // If the last two bin edges are the same, we update the left bin edge as the
+        // average of its two neighbors.
+        if (binEdges[i] == binEdges[i - 1]) {
+            binEdges[i - 1] = (binEdges[i] + binEdges[i - 2]) / 2;
         }
         return binEdges;
     }
@@ -256,7 +306,8 @@ public class KBinsDiscretizer
 
             if (features[0] == features[numData - 1]) {
                 LOG.warn("Feature " + columnId + " is constant and the output will all be zero.");
-                binEdges[columnId] = new double[] {Double.MIN_VALUE, Double.MAX_VALUE};
+                binEdges[columnId] =
+                        new double[] {Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY};
             } else {
                 // Checks whether there are more than {numBins} distinct feature values in each
                 // column.

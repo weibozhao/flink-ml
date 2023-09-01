@@ -18,8 +18,6 @@
 
 package org.apache.flink.ml.feature;
 
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.feature.lsh.MinHashLSH;
 import org.apache.flink.ml.feature.lsh.MinHashLSHModel;
 import org.apache.flink.ml.feature.lsh.MinHashLSHModelData;
@@ -27,10 +25,9 @@ import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.linalg.Vectors;
-import org.apache.flink.ml.util.ReadWriteUtils;
+import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Schema;
@@ -118,13 +115,7 @@ public class MinHashLSHTest extends AbstractTestBase {
 
     @Before
     public void before() {
-        Configuration config = new Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        env = StreamExecutionEnvironment.getExecutionEnvironment(config);
-        env.getConfig().enableObjectReuse();
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.noRestart());
+        env = TestUtils.getExecutionEnvironment();
         tEnv = StreamTableEnvironment.create(env);
 
         List<Row> inputRows =
@@ -280,7 +271,8 @@ public class MinHashLSHTest extends AbstractTestBase {
                         .setNumHashFunctionsPerTable(3);
 
         MinHashLSH loadedLsh =
-                TestUtils.saveAndReload(tEnv, lsh, tempFolder.newFolder().getAbsolutePath());
+                TestUtils.saveAndReload(
+                        tEnv, lsh, tempFolder.newFolder().getAbsolutePath(), MinHashLSH::load);
         MinHashLSHModel lshModel = loadedLsh.fit(inputTable);
         Assert.assertEquals(
                 Arrays.asList(
@@ -304,7 +296,11 @@ public class MinHashLSHTest extends AbstractTestBase {
                         .setNumHashFunctionsPerTable(3);
         MinHashLSHModel lshModel = lsh.fit(inputTable);
         MinHashLSHModel loadedModel =
-                TestUtils.saveAndReload(tEnv, lshModel, tempFolder.newFolder().getAbsolutePath());
+                TestUtils.saveAndReload(
+                        tEnv,
+                        lshModel,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        MinHashLSHModel::load);
         Table output = loadedModel.transform(inputTable)[0].select($(lsh.getOutputCol()));
         verifyPredictionResult(output, outputRows);
     }
@@ -362,7 +358,7 @@ public class MinHashLSHTest extends AbstractTestBase {
         MinHashLSHModel modelA = lsh.fit(inputTable);
         Table modelDataData = modelA.getModelData()[0];
         MinHashLSHModel modelB = new MinHashLSHModel().setModelData(modelDataData);
-        ReadWriteUtils.updateExistingParams(modelB, modelA.getParamMap());
+        ParamUtils.updateExistingParams(modelB, modelA.getParamMap());
         Table output = modelB.transform(inputTable)[0].select($(lsh.getOutputCol()));
         verifyPredictionResult(output, outputRows);
     }

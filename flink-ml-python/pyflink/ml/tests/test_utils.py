@@ -24,17 +24,17 @@ import uuid
 
 from py4j.java_gateway import JavaObject
 from pyflink.common import RestartStrategies, Configuration
-from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.datastream import StreamExecutionEnvironment, HashMapStateBackend
 from pyflink.java_gateway import get_gateway
 from pyflink.ml import add_jars_to_context_class_loader
 from pyflink.table import StreamTableEnvironment
 from pyflink.util.java_utils import get_j_env_configuration
 
-from pyflink.ml.core.wrapper import JavaWithParams
+from pyflink.ml.wrapper import JavaWithParams
 
 
 def update_existing_params(target: JavaWithParams, source: JavaWithParams):
-    get_gateway().jvm.org.apache.flink.ml.util.ReadWriteUtils \
+    get_gateway().jvm.org.apache.flink.ml.util.ParamUtils \
         .updateExistingParams(target._java_obj, source._java_obj.getParamMap())
 
 
@@ -71,6 +71,7 @@ class PyFlinkMLTestCase(unittest.TestCase):
         self.env.set_parallelism(4)
         self.env.enable_checkpointing(100)
         self.env.set_restart_strategy(RestartStrategies.no_restart())
+        self.env.set_state_backend(HashMapStateBackend())
         self.t_env = StreamTableEnvironment.create(self.env)
         self.temp_dir = tempfile.mkdtemp()
 
