@@ -16,31 +16,23 @@
  * limitations under the License.
  */
 
-package org.apache.flink.ml.linalg;
+package org.apache.flink.ml.common.fm;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.java.tuple.Tuple2;
 
-import java.io.Serializable;
+/** Utility class to represent a data point that contains features, label and weight. */
+public class FmSample {
+    public Tuple2<long[], double[]> features;
 
-/** A matrix of double values. */
-@PublicEvolving
-public interface Matrix extends Serializable {
+    public double label;
 
-    /** Gets number of rows. */
-    int numRows();
+    public double weight;
 
-    /** Gets number of columns. */
-    int numCols();
+    public FmSample(Tuple2<long[], double[]> features, double label, double weight) {
+        this.features = features;
+        this.label = label;
+        this.weight = weight;
+    }
 
-    /** Gets value of the (i,j) element. */
-    double get(int i, int j);
-
-    /** Adds value to the (i,j) element. */
-    double add(int i, int j, double value);
-
-    /** Sets value of the (i,j) element. */
-    double set(int i, int j, double value);
-
-    /** Converts the instance to a dense matrix. */
-    DenseMatrix toDense();
+    public FmSample() {}
 }
