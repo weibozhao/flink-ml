@@ -23,6 +23,7 @@ import org.apache.flink.core.memory.DataInputViewStreamWrapper;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.typeinfo.DenseVectorSerializer;
+import org.apache.flink.types.Row;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -40,6 +41,11 @@ public class LogisticRegressionModelData {
     public LogisticRegressionModelData(DenseVector coefficient, long modelVersion) {
         this.coefficient = coefficient;
         this.modelVersion = modelVersion;
+    }
+
+    public LogisticRegressionModelData(Row row) {
+        this.coefficient = row.getFieldAs(0);
+        this.modelVersion = row.getFieldAs(1);
     }
 
     /**

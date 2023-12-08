@@ -20,8 +20,10 @@ package org.apache.flink.ml.common.fm;
 
 import org.apache.flink.api.java.tuple.Tuple2;
 
+import java.io.Serializable;
+
 /** Utility class to represent a data point that contains features, label and weight. */
-public class FmSample {
+public class FmSample implements Serializable {
     public Tuple2<long[], double[]> features;
 
     public double label;

@@ -19,7 +19,7 @@
 package org.apache.flink.ml.examples.clustering;
 
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
-import org.apache.flink.ml.clustering.kmeans.KMeansModelData;
+import org.apache.flink.ml.clustering.kmeans.KMeansModelDataUtil;
 import org.apache.flink.ml.clustering.kmeans.OnlineKMeans;
 import org.apache.flink.ml.clustering.kmeans.OnlineKMeansModel;
 import org.apache.flink.ml.examples.util.PeriodicSourceFunction;
@@ -89,7 +89,7 @@ public class OnlineKMeansExample {
                         .setPredictionCol("prediction")
                         .setGlobalBatchSize(6)
                         .setInitialModelData(
-                                KMeansModelData.generateRandomModelData(tEnv, 2, 2, 0.0, 0));
+                                KMeansModelDataUtil.generateRandomModelData(tEnv, 2, 2, 0.0, 0));
 
         // Trains the online K-means Model.
         OnlineKMeansModel onlineModel = onlineKMeans.fit(trainTable);

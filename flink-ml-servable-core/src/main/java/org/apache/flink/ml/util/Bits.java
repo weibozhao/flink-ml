@@ -44,6 +44,10 @@ public class Bits {
         return Double.longBitsToDouble(getLong(b, off));
     }
 
+    public static float getFloat(byte[] b, int off) {
+        return Float.intBitsToFloat(getInt(b, off));
+    }
+
     public static int getInt(byte[] b, int off) {
         return ((b[off + 3] & 0xFF))
                 + ((b[off + 2] & 0xFF) << 8)
@@ -69,6 +73,10 @@ public class Bits {
 
     public static void putDouble(byte[] b, int off, double val) {
         putLong(b, off, Double.doubleToLongBits(val));
+    }
+
+    public static void putFloat(byte[] b, int off, float val) {
+        putLong(b, off, Float.floatToIntBits(val));
     }
 
     public static void putInt(byte[] b, int off, int val) {
@@ -110,6 +118,11 @@ public class Bits {
         return Integer.BYTES + array.length * Long.BYTES;
     }
 
+    /** Returns the size of a long array in bytes. */
+    public static int getFloatArraySizeInBytes(float[] array) {
+        return Integer.BYTES + array.length * Float.BYTES;
+    }
+
     /** Gets a double array from the byte array starting from the given offset. */
     public static double[] getDoubleArray(byte[] bytes, int offset) {
         int size = Bits.getInt(bytes, offset);
@@ -137,8 +150,30 @@ public class Bits {
         return offset;
     }
 
+    /** Gets a double array from the byte array starting from the given offset. */
+    public static float[] getFloatArray(byte[] bytes, int offset) {
+        int size = Bits.getInt(bytes, offset);
+        offset += Integer.BYTES;
+        float[] result = new float[size];
+        for (int i = 0; i < size; i++) {
+            result[i] = Bits.getFloat(bytes, offset);
+            offset += Float.BYTES;
+        }
+        return result;
+    }
+
     /** Returns the size of a double array in bytes. */
     public static int getDoubleArraySizeInBytes(double[] array) {
         return Integer.BYTES + array.length * Long.BYTES;
+    }
+
+    public static int putFloatArray(float[] array, byte[] bytes, int offset) {
+        Bits.putInt(bytes, offset, array.length);
+        offset += Integer.BYTES;
+        for (float v : array) {
+            Bits.putInt(bytes, offset, Float.floatToIntBits(v));
+            offset += Float.BYTES;
+        }
+        return offset;
     }
 }

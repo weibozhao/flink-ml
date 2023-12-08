@@ -19,6 +19,9 @@
 package org.apache.flink.ml.common.fm;
 
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.core.fs.FileStatus;
+import org.apache.flink.core.fs.FileSystem;
+import org.apache.flink.core.fs.Path;
 import org.apache.flink.ml.classification.fmclassifier.FmClassifierModelParams;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.SparseVector;
@@ -29,12 +32,14 @@ import org.apache.flink.ml.servable.api.ModelServable;
 import org.apache.flink.ml.servable.api.Row;
 import org.apache.flink.ml.servable.types.BasicType;
 import org.apache.flink.ml.servable.types.DataTypes;
+import org.apache.flink.ml.util.FileUtils;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ServableReadWriteUtils;
 import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.SequenceInputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -113,9 +118,29 @@ public class FmModelServable
         FmModelServable servable =
                 ServableReadWriteUtils.loadServableParam(path, FmModelServable.class);
 
-        try (InputStream modelData = ServableReadWriteUtils.loadModelData(path)) {
+        try (InputStream modelData = loadModelData(path)) {
             servable.setModelData(modelData);
             return servable;
+        }
+    }
+
+    public static InputStream loadModelData(String path) throws IOException {
+        Path modelDataPath = FileUtils.getDataPath(path);
+
+        FileSystem fileSystem = modelDataPath.getFileSystem();
+
+        FileStatus[] files = fileSystem.listStatus(modelDataPath);
+        if (files.length == 1) {
+            return fileSystem.open(files[0].getPath());
+        } else {
+            SequenceInputStream ret =
+                    new SequenceInputStream(
+                            fileSystem.open(files[0].getPath()),
+                            fileSystem.open(files[1].getPath()));
+            for (int i = 2; i < files.length; ++i) {
+                ret = new SequenceInputStream(ret, fileSystem.open(files[i].getPath()));
+            }
+            return ret;
         }
     }
 

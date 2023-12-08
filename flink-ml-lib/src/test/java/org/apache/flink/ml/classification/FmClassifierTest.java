@@ -137,7 +137,7 @@ public class FmClassifierTest {
                         new ArrayList<>(Arrays.asList("features", "label", "weight")),
                         new ArrayList<>(
                                 Arrays.asList(
-                                        DataTypes.VECTOR(BasicType.DOUBLE),
+                                        DataTypes.vectorType(BasicType.DOUBLE),
                                         DataTypes.DOUBLE,
                                         DataTypes.DOUBLE)),
                         testRows);

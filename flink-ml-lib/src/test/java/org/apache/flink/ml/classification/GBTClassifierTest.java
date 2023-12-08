@@ -201,7 +201,7 @@ public class GBTClassifierTest extends AbstractTestBase {
             DataTypes.DOUBLE,
             DataTypes.DOUBLE,
             DataTypes.DOUBLE,
-            DataTypes.VECTOR(BasicType.DOUBLE)
+            DataTypes.vectorType(BasicType.DOUBLE)
         };
 
         inputTable =

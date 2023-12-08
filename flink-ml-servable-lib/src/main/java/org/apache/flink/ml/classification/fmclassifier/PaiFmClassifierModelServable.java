@@ -26,14 +26,18 @@ import org.apache.flink.ml.servable.api.Row;
 import org.apache.flink.ml.servable.types.BasicType;
 import org.apache.flink.ml.servable.types.DataType;
 import org.apache.flink.ml.servable.types.DataTypes;
+import org.apache.flink.ml.util.ServableReadWriteUtils;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+
+import static org.apache.flink.ml.util.FileUtils.loadMetadata;
 
 /** A Servable which can be used to classifies data with fm model in online inference for Pai. */
 @Deprecated
@@ -75,6 +79,16 @@ public class PaiFmClassifierModelServable extends FmModelServable
         }
         if (mapDesignerParams.containsKey("predictionDetailCol")) {
             setRawPredictionCol((String) mapDesignerParams.get("predictionDetailCol"));
+        }
+    }
+
+    public static PaiFmClassifierModelServable load(String path) throws IOException {
+        Map<String, Object> designerParams = (Map<String, Object>) loadMetadata(path, "");
+        PaiFmClassifierModelServable paiServable = new PaiFmClassifierModelServable();
+        paiServable.setDesignerParams(designerParams);
+        try (InputStream modelData = ServableReadWriteUtils.loadModelData(path)) {
+            paiServable.setModelData(modelData);
+            return paiServable;
         }
     }
 }
