@@ -19,7 +19,7 @@
 package org.apache.flink.ml.common.fm;
 
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.ml.common.ps.iterations.ProcessStage;
+import org.apache.flink.ml.common.ps.iterations.ProcessComponent;
 import org.apache.flink.ml.common.ps.sarray.SharedLongArray;
 
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
@@ -31,7 +31,7 @@ import java.util.List;
  * An iteration stage that samples a batch of training data and computes the indices needed to
  * compute gradients.
  */
-public class ComputeFmIndices extends ProcessStage<FmMLSession> {
+public class ComputeFmIndices extends ProcessComponent<FmMLSession> {
 
     private final int modelSize;
 
@@ -42,7 +42,7 @@ public class ComputeFmIndices extends ProcessStage<FmMLSession> {
     @Override
     public void process(FmMLSession session) throws Exception {
 
-        session.getNextBatchData();
+        session.readInNextBatchData();
         // Resets the offset of indices as zero.
         getUnSortedIndices(session.batchData, session.indices);
         // Resets the pulled value size as the same as indices.

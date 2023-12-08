@@ -25,13 +25,14 @@ import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.ml.api.Transformer;
 import org.apache.flink.ml.common.datastream.TableUtils;
 import org.apache.flink.ml.common.param.HasHandleInvalid;
+import org.apache.flink.ml.common.ps.api.AlgorithmFlow;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
@@ -66,9 +67,6 @@ public class Bucketizer implements Transformer<Bucketizer>, BucketizerParams<Buc
         Preconditions.checkArgument(inputCols.length == outputCols.length);
         Preconditions.checkArgument(inputCols.length == splitsArray.length);
 
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
-
         RowTypeInfo inputTypeInfo = TableUtils.getRowTypeInfo(inputs[0].getResolvedSchema());
         TypeInformation<?>[] outputTypes = new TypeInformation[outputCols.length];
         Arrays.fill(outputTypes, BasicTypeInfo.DOUBLE_TYPE_INFO);
@@ -79,13 +77,18 @@ public class Bucketizer implements Transformer<Bucketizer>, BucketizerParams<Buc
 
         int[] inputColumnIndexes =
                 TableUtils.getColumnIndexes(inputs[0].getResolvedSchema(), inputCols);
-        DataStream<Row> result =
-                tEnv.toDataStream(inputs[0])
-                        .flatMap(
-                                new FindBucketFunction(
-                                        inputColumnIndexes, splitsArray, getHandleInvalid()),
-                                outputTypeInfo);
-        return new Table[] {tEnv.fromDataStream(result)};
+
+        return new AlgorithmFlow()
+                .add(
+                        new MLDataFunction(
+                                        "flatMap",
+                                        new FindBucketFunction(
+                                                inputColumnIndexes,
+                                                splitsArray,
+                                                getHandleInvalid()))
+                                .returns(outputTypeInfo))
+                .apply(MLData.of(inputs))
+                .getTables();
     }
 
     /** Finds the bucket index for each continuous feature of an input data point. */

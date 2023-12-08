@@ -20,7 +20,7 @@ package org.apache.flink.ml.common.fm;
 
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.ml.common.fm.BaseFmTrain.LossFunction;
-import org.apache.flink.ml.common.ps.iterations.ProcessStage;
+import org.apache.flink.ml.common.ps.iterations.ProcessComponent;
 import org.apache.flink.ml.common.ps.sarray.SharedDoubleArray;
 import org.apache.flink.ml.common.ps.sarray.SharedLongArray;
 
@@ -30,7 +30,7 @@ import java.io.IOException;
 import java.util.List;
 
 /** An iteration stage that uses the pulled model values and batch data to compute the gradients. */
-public class ComputeFmGradients extends ProcessStage<FmMLSession> {
+public class ComputeFmGradients extends ProcessComponent<FmMLSession> {
     private final LossFunction lossFunc;
     private final int[] dim;
     private final double[] regular;

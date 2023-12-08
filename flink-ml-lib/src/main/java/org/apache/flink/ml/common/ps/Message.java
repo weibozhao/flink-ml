@@ -70,6 +70,19 @@ public class Message {
         Bits.putDoubleArray(values, bytes, offset);
     }
 
+    public Message(int workerId, int serverId, int stageId, long[] keys, float[] values) {
+        int sizeInBytes =
+                KVS_OFFSET
+                        + Bits.getLongArraySizeInBytes(keys)
+                        + Bits.getFloatArraySizeInBytes(values);
+        bytes = new byte[sizeInBytes];
+        Bits.putInt(bytes, WORKER_ID_OFFSET, workerId);
+        Bits.putInt(bytes, SERVER_ID_OFFSET, serverId);
+        Bits.putInt(bytes, STAGE_ID_OFFSET, stageId);
+        int offset = Bits.putLongArray(keys, bytes, KVS_OFFSET);
+        Bits.putFloatArray(values, bytes, offset);
+    }
+
     /** Constructs a message instance from long keys and generics values. */
     public <V> Message(
             int workerId,
@@ -130,6 +143,11 @@ public class Message {
     public double[] getValuesInDoubleArray() {
         int offset = KVS_OFFSET + Bits.getInt(bytes, KVS_OFFSET) * Long.BYTES + Integer.BYTES;
         return Bits.getDoubleArray(bytes, offset);
+    }
+
+    public float[] getValuesInFLoatArray() {
+        int offset = KVS_OFFSET + Bits.getInt(bytes, KVS_OFFSET) * Long.BYTES + Integer.BYTES;
+        return Bits.getFloatArray(bytes, offset);
     }
 
     /** Retrieves the worker id. */

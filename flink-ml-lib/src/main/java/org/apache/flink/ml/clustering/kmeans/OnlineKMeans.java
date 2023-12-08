@@ -24,14 +24,14 @@ import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.ObjectArrayTypeInfo;
-import org.apache.flink.iteration.DataStreamList;
-import org.apache.flink.iteration.IterationBody;
-import org.apache.flink.iteration.IterationBodyResult;
-import org.apache.flink.iteration.Iterations;
 import org.apache.flink.iteration.operator.OperatorStateUtils;
 import org.apache.flink.ml.api.Estimator;
-import org.apache.flink.ml.common.datastream.DataStreamUtils;
 import org.apache.flink.ml.common.distance.DistanceMeasure;
+import org.apache.flink.ml.common.ps.api.AlgorithmFlow;
+import org.apache.flink.ml.common.ps.api.CoTransformComponent;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
+import org.apache.flink.ml.common.ps.api.MiniBatchComponent;
 import org.apache.flink.ml.linalg.BLAS;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.Vector;
@@ -41,19 +41,16 @@ import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
 import org.apache.flink.runtime.state.StateInitializationContext;
-import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
-import org.apache.flink.streaming.api.operators.TwoInputStreamOperator;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.commons.collections.IteratorUtils;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -86,29 +83,58 @@ public class OnlineKMeans
     public OnlineKMeansModel fit(Table... inputs) {
         Preconditions.checkArgument(inputs.length == 1);
 
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
+        MLData mlData =
+                MLData.of(
+                        new Table[] {inputs[0], initModelDataTable},
+                        new String[] {"data", "model"});
 
-        DataStream<DenseVector> points =
-                tEnv.toDataStream(inputs[0]).map(new FeaturesExtractor(getFeaturesCol()));
+        AlgorithmFlow algorithmFlow =
+                new AlgorithmFlow(false)
+                        .add(new MLDataFunction("map", new FeaturesExtractor(getFeaturesCol())))
+                        .add(
+                                new MLDataFunction(
+                                                "map",
+                                                (MapFunction<Row, KMeansModelData>)
+                                                        (x ->
+                                                                new KMeansModelData(
+                                                                        Arrays.stream(
+                                                                                        ((Vector[])
+                                                                                                x
+                                                                                                        .getField(
+                                                                                                                0)))
+                                                                                .map(
+                                                                                        Vector
+                                                                                                ::toDense)
+                                                                                .toArray(
+                                                                                        DenseVector
+                                                                                                        []
+                                                                                                ::new),
+                                                                        ((Vector) x.getField(1))
+                                                                                .toDense())))
+                                        .withParallel(1)
+                                        .input("model")
+                                        .output("model"))
+                        .startIteration(new String[] {"model"}, new String[] {"data"}, false)
+                        .add(
+                                new MiniBatchComponent(getGlobalBatchSize())
+                                        .input("data")
+                                        .output("data"))
+                        .add(new MLDataFunction("broadcast").input("model").output("model"))
+                        .add(
+                                new ModelDataLocalUpdater(
+                                                DistanceMeasure.getInstance(getDistanceMeasure()),
+                                                getK(),
+                                                getDecayFactor())
+                                        .input("data")
+                                        .with("model")
+                                        .output("newModel")
+                                        .returns(TypeInformation.of(KMeansModelData.class)))
+                        .add(
+                                new MLDataFunction("reduce", new ModelDataGlobalReducer())
+                                        .isOnine(true))
+                        .endIteration(new String[] {"newModel", "model"}, false);
 
-        DataStream<KMeansModelData> initModelData =
-                KMeansModelData.getModelDataStream(initModelDataTable);
-        initModelData.getTransformation().setParallelism(1);
-
-        IterationBody body =
-                new OnlineKMeansIterationBody(
-                        DistanceMeasure.getInstance(getDistanceMeasure()),
-                        getK(),
-                        getDecayFactor(),
-                        getGlobalBatchSize());
-
-        DataStream<KMeansModelData> onlineModelData =
-                Iterations.iterateUnboundedStreams(
-                                DataStreamList.of(initModelData), DataStreamList.of(points), body)
-                        .get(0);
-
-        Table onlineModelDataTable = tEnv.fromDataStream(onlineModelData);
+        Table onlineModelDataTable = algorithmFlow.apply(mlData).getTable();
         OnlineKMeansModel model = new OnlineKMeansModel().setModelData(onlineModelDataTable);
         ParamUtils.updateExistingParams(model, paramMap);
         return model;
@@ -121,64 +147,22 @@ public class OnlineKMeans
                 initModelDataTable, "Initial Model Data Table should have been set.");
         ReadWriteUtils.saveMetadata(this, path);
         ReadWriteUtils.saveModelData(
-                KMeansModelData.getModelDataStream(initModelDataTable),
+                KMeansModelDataUtil.getModelDataStream(initModelDataTable),
                 path,
-                new KMeansModelData.ModelDataEncoder());
+                new KMeansModelDataUtil.ModelDataEncoder());
     }
 
     public static OnlineKMeans load(StreamTableEnvironment tEnv, String path) throws IOException {
         OnlineKMeans onlineKMeans = ReadWriteUtils.loadStageParam(path);
         onlineKMeans.initModelDataTable =
-                ReadWriteUtils.loadModelData(tEnv, path, new KMeansModelData.ModelDataDecoder());
+                ReadWriteUtils.loadModelData(
+                        tEnv, path, new KMeansModelDataUtil.ModelDataDecoder());
         return onlineKMeans;
     }
 
     @Override
     public Map<Param<?>, Object> getParamMap() {
         return paramMap;
-    }
-
-    private static class OnlineKMeansIterationBody implements IterationBody {
-        private final DistanceMeasure distanceMeasure;
-        private final int k;
-        private final double decayFactor;
-        private final int batchSize;
-
-        public OnlineKMeansIterationBody(
-                DistanceMeasure distanceMeasure, int k, double decayFactor, int batchSize) {
-            this.distanceMeasure = distanceMeasure;
-            this.k = k;
-            this.decayFactor = decayFactor;
-            this.batchSize = batchSize;
-        }
-
-        @Override
-        public IterationBodyResult process(
-                DataStreamList variableStreams, DataStreamList dataStreams) {
-            DataStream<KMeansModelData> modelData = variableStreams.get(0);
-            DataStream<DenseVector> points = dataStreams.get(0);
-
-            int parallelism = points.getParallelism();
-
-            Preconditions.checkState(
-                    parallelism <= batchSize,
-                    "There are more subtasks in the training process than the number "
-                            + "of elements in each batch. Some subtasks might be idling forever.");
-
-            DataStream<KMeansModelData> newModelData =
-                    DataStreamUtils.generateBatchData(points, parallelism, batchSize)
-                            .connect(modelData.broadcast())
-                            .transform(
-                                    "ModelDataLocalUpdater",
-                                    TypeInformation.of(KMeansModelData.class),
-                                    new ModelDataLocalUpdater(distanceMeasure, k, decayFactor))
-                            .setParallelism(parallelism)
-                            .countWindowAll(parallelism)
-                            .reduce(new ModelDataGlobalReducer());
-
-            return new IterationBodyResult(
-                    DataStreamList.of(newModelData), DataStreamList.of(modelData));
-        }
     }
 
     /**
@@ -224,8 +208,8 @@ public class OnlineKMeans
      *       weights.
      * </ul>
      */
-    private static class ModelDataLocalUpdater extends AbstractStreamOperator<KMeansModelData>
-            implements TwoInputStreamOperator<DenseVector[], KMeansModelData, KMeansModelData> {
+    private static class ModelDataLocalUpdater
+            extends CoTransformComponent<DenseVector[], KMeansModelData, KMeansModelData> {
         private final DistanceMeasure distanceMeasure;
         private final int k;
         private final double decayFactor;
@@ -264,6 +248,7 @@ public class OnlineKMeans
         public void processElement2(StreamRecord<KMeansModelData> modelDataRecord)
                 throws Exception {
             Preconditions.checkArgument(modelDataRecord.getValue().centroids.length == k);
+
             modelDataState.add(modelDataRecord.getValue());
             alignAndComputeModelData();
         }

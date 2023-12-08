@@ -18,10 +18,10 @@
 
 package org.apache.flink.ml.recommendation.als;
 
-import org.apache.flink.ml.common.ps.iterations.ProcessStage;
+import org.apache.flink.ml.common.ps.iterations.ProcessComponent;
 
 /** An iteration stage that copy the aggregating data to the all reduce data. */
-public class CopyAllReduceData extends ProcessStage<AlsMLSession> {
+public class CopyAllReduceData extends ProcessComponent<AlsMLSession> {
 
     private final int rank;
 
@@ -31,11 +31,11 @@ public class CopyAllReduceData extends ProcessStage<AlsMLSession> {
 
     @Override
     public void process(AlsMLSession session) throws Exception {
-        System.arraycopy(
-                session.aggregatorSDAArray.elements(),
-                0,
-                session.allReduceBuffer[0],
-                0,
-                rank * rank);
+        for (int i = 0; i < rank * rank; ++i) {
+            session.allReduceBuffer[0][i] = session.aggregatorSDAArray.elements()[i];
+        }
+        // System.out.println(session.aggregatorSDAArray.elements().length);
+        // System.out.println(session.iterationId + " new " + new
+        // DenseVector(session.allReduceBuffer[0]));
     }
 }

@@ -18,31 +18,31 @@
 
 package org.apache.flink.ml.recommendation.swing;
 
+import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.typeinfo.PrimitiveArrayTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
+import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.iteration.operator.OperatorStateUtils;
 import org.apache.flink.ml.api.AlgoOperator;
 import org.apache.flink.ml.common.datastream.TableUtils;
+import org.apache.flink.ml.common.ps.api.AlgorithmFlow;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
+import org.apache.flink.ml.common.ps.api.TransformComponent;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
-import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
-import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
-import org.apache.flink.streaming.api.operators.BoundedOneInput;
-import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Preconditions;
@@ -105,57 +105,48 @@ public class Swing implements AlgoOperator<Swing>, SwingParams<Swing> {
                             getMaxUserBehavior(), getMinUserBehavior()));
         }
 
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
+        MLData mlData = new MLData(inputs, new String[] {"data"});
 
-        SingleOutputStreamOperator<Tuple2<Long, Long>> purchasingBehavior =
-                tEnv.toDataStream(inputs[0])
-                        .map(
-                                row -> {
-                                    Long userId = row.getFieldAs(userCol);
-                                    Long itemId = row.getFieldAs(itemCol);
-                                    if (userId == null || itemId == null) {
-                                        throw new RuntimeException(
-                                                "Data of user and item column must not be null.");
-                                    }
-                                    return Tuple2.of(userId, itemId);
-                                })
-                        .returns(Types.TUPLE(Types.LONG, Types.LONG));
+        TypeInformation<?> outputTypeInfo1 =
+                Types.TUPLE(
+                        Types.LONG,
+                        Types.LONG,
+                        PrimitiveArrayTypeInfo.LONG_PRIMITIVE_ARRAY_TYPE_INFO);
 
-        SingleOutputStreamOperator<Tuple3<Long, Long, long[]>> userBehavior =
-                purchasingBehavior
-                        .keyBy(tuple -> tuple.f0)
-                        .transform(
-                                "collectingUserBehavior",
-                                Types.TUPLE(
-                                        Types.LONG,
-                                        Types.LONG,
-                                        PrimitiveArrayTypeInfo.LONG_PRIMITIVE_ARRAY_TYPE_INFO),
-                                new CollectingUserBehavior(
-                                        getMinUserBehavior(), getMaxUserBehavior()));
-
-        RowTypeInfo outputTypeInfo =
+        RowTypeInfo outputTypeInfo2 =
                 new RowTypeInfo(
                         new TypeInformation[] {Types.LONG, Types.STRING},
                         new String[] {getItemCol(), getOutputCol()});
 
-        DataStream<Row> output =
-                userBehavior
-                        .keyBy(tuple -> tuple.f1)
-                        .transform(
-                                "computingSimilarItems",
-                                outputTypeInfo,
+        AlgorithmFlow flow =
+                new AlgorithmFlow()
+                        .add(new MLDataFunction("map", new ParseSample(getUserCol(), getItemCol())))
+                        .add(
+                                new MLDataFunction(
+                                        "keyBy",
+                                        (KeySelector<Tuple2<Long, Long>, Long>) (x -> x.f0)))
+                        .add(
+                                new CollectingUserBehavior(
+                                                getMinUserBehavior(), getMaxUserBehavior())
+                                        .returns(outputTypeInfo1))
+                        .add(
+                                new MLDataFunction(
+                                        "keyBy",
+                                        (KeySelector<Tuple3<Long, Long, long[]>, Long>)
+                                                (x -> x.f1)))
+                        .add(
                                 new ComputingSimilarItems(
-                                        getK(),
-                                        getMaxUserNumPerItem(),
-                                        getMaxUserBehavior(),
-                                        getAlpha1(),
-                                        getAlpha2(),
-                                        getBeta(),
-                                        getSeed(),
-                                        getNormalizeResult()));
+                                                getK(),
+                                                getMaxUserNumPerItem(),
+                                                getMaxUserBehavior(),
+                                                getAlpha1(),
+                                                getAlpha2(),
+                                                getBeta(),
+                                                getSeed(),
+                                                getNormalizeResult())
+                                        .returns(outputTypeInfo2));
 
-        return new Table[] {tEnv.fromDataStream(output)};
+        return flow.apply(mlData).getTables();
     }
 
     @Override
@@ -172,6 +163,27 @@ public class Swing implements AlgoOperator<Swing>, SwingParams<Swing> {
         return ReadWriteUtils.loadStageParam(path);
     }
 
+    /** Parse sample. */
+    public static class ParseSample implements MapFunction<Row, Tuple2<Long, Long>> {
+        private final String userCol;
+        private final String itemCol;
+
+        public ParseSample(String userCol, String itemCol) {
+            this.userCol = userCol;
+            this.itemCol = itemCol;
+        }
+
+        @Override
+        public Tuple2<Long, Long> map(Row row) {
+            Long userId = row.getFieldAs(userCol);
+            Long itemId = row.getFieldAs(itemCol);
+            if (userId == null || itemId == null) {
+                throw new RuntimeException("Data of user and item column must not be null.");
+            }
+            return Tuple2.of(userId, itemId);
+        }
+    }
+
     /**
      * Collects user behavior data and appends to the input table.
      *
@@ -179,9 +191,7 @@ public class Swing implements AlgoOperator<Swing>, SwingParams<Swing> {
      * its input table must be bounded.
      */
     private static class CollectingUserBehavior
-            extends AbstractStreamOperator<Tuple3<Long, Long, long[]>>
-            implements OneInputStreamOperator<Tuple2<Long, Long>, Tuple3<Long, Long, long[]>>,
-                    BoundedOneInput {
+            extends TransformComponent<Tuple2<Long, Long>, Tuple3<Long, Long, long[]>> {
         private final int minUserItemInteraction;
         private final int maxUserItemInteraction;
 
@@ -259,8 +269,8 @@ public class Swing implements AlgoOperator<Swing>, SwingParams<Swing> {
     }
 
     /** Calculates similarity between items and keep top k similar items of each target item. */
-    private static class ComputingSimilarItems extends AbstractStreamOperator<Row>
-            implements OneInputStreamOperator<Tuple3<Long, Long, long[]>, Row>, BoundedOneInput {
+    private static class ComputingSimilarItems
+            extends TransformComponent<Tuple3<Long, Long, long[]>, Row> {
 
         private final int k;
         private final int maxUserNumPerItem;

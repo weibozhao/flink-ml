@@ -289,6 +289,7 @@ public class ANOVATestTest extends AbstractTestBase {
     @Before
     public void before() {
         StreamExecutionEnvironment env = TestUtils.getExecutionEnvironment();
+        env.getConfig().enableGenericTypes();
         tEnv = StreamTableEnvironment.create(env);
         denseInputTable =
                 tEnv.fromDataStream(env.fromCollection(DENSE_INPUT_DATA)).as("label", "features");

@@ -44,7 +44,7 @@ public final class ContinuousFeatureSplitter extends HistogramFeatureSplitter {
         HessianImpurity missing = emptyImpurity();
         countTotalMissing(total, missing);
 
-        if (total.getNumInstances() <= minSamplesPerLeaf) {
+        if (total.getNumInstances() <= minInstancesPerNode) {
             return Split.ContinuousSplit.invalid(total.prediction());
         }
 

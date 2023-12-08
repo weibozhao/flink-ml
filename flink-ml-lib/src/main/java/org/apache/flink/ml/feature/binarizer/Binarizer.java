@@ -24,6 +24,8 @@ import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.ml.api.Transformer;
 import org.apache.flink.ml.common.datastream.TableUtils;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.linalg.Vector;
@@ -33,10 +35,8 @@ import org.apache.flink.ml.linalg.typeinfo.VectorTypeInfo;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Preconditions;
 
@@ -61,8 +61,6 @@ public class Binarizer implements Transformer<Binarizer>, BinarizerParams<Binari
     @Override
     public Table[] transform(Table... inputs) {
         Preconditions.checkArgument(inputs.length == 1);
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
 
         RowTypeInfo inputTypeInfo = TableUtils.getRowTypeInfo(inputs[0].getResolvedSchema());
         String[] inputCols = getInputCols();
@@ -88,19 +86,20 @@ public class Binarizer implements Transformer<Binarizer>, BinarizerParams<Binari
                         ArrayUtils.addAll(inputTypeInfo.getFieldTypes(), outputTypes),
                         ArrayUtils.addAll(inputTypeInfo.getFieldNames(), getOutputCols()));
 
-        DataStream<Row> output =
-                tEnv.toDataStream(inputs[0])
-                        .map(new BinarizeFunction(inputCols, getThresholds()), outputTypeInfo);
-        Table outputTable = tEnv.fromDataStream(output);
+        Table outputTable =
+                new MLDataFunction("map", new BinarizeComponent(inputCols, getThresholds()))
+                        .returns(outputTypeInfo)
+                        .apply(MLData.of(inputs))
+                        .getTable();
 
         return new Table[] {outputTable};
     }
 
-    private static class BinarizeFunction implements MapFunction<Row, Row> {
+    private static class BinarizeComponent implements MapFunction<Row, Row> {
         private final String[] inputCols;
         private final Double[] thresholds;
 
-        public BinarizeFunction(String[] inputCols, Double[] thresholds) {
+        public BinarizeComponent(String[] inputCols, Double[] thresholds) {
             this.inputCols = inputCols;
             this.thresholds = thresholds;
         }

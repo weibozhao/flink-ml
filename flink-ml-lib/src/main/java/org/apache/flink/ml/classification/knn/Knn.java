@@ -19,10 +19,12 @@
 package org.apache.flink.ml.classification.knn;
 
 import org.apache.flink.api.common.functions.MapFunction;
-import org.apache.flink.api.common.functions.RichMapPartitionFunction;
+import org.apache.flink.api.common.functions.MapPartitionFunction;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.ml.api.Estimator;
-import org.apache.flink.ml.common.datastream.DataStreamUtils;
+import org.apache.flink.ml.common.ps.api.AlgorithmFlow;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
 import org.apache.flink.ml.linalg.BLAS;
 import org.apache.flink.ml.linalg.DenseMatrix;
 import org.apache.flink.ml.linalg.DenseVector;
@@ -30,10 +32,8 @@ import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
@@ -60,15 +60,76 @@ public class Knn implements Estimator<Knn, KnnModel>, KnnParams<Knn> {
     @Override
     public KnnModel fit(Table... inputs) {
         Preconditions.checkArgument(inputs.length == 1);
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
-        /* Tuple3 : <feature, label, norm square> */
-        DataStream<Tuple3<DenseVector, Double, Double>> inputDataWithNorm =
-                computeNormSquare(tEnv.toDataStream(inputs[0]));
-        DataStream<KnnModelData> modelData = genModelData(inputDataWithNorm);
-        KnnModel model = new KnnModel().setModelData(tEnv.fromDataStream(modelData));
+        MLData mlData = MLData.of(inputs);
+
+        AlgorithmFlow flow =
+                new AlgorithmFlow()
+                        .add(
+                                new MLDataFunction(
+                                        "map",
+                                        new ComputeNormSquare(getLabelCol(), getFeaturesCol())))
+                        .add(
+                                new MLDataFunction("mapPartition", new GenModelData())
+                                        .withParallel(1));
+
+        KnnModel model = new KnnModel().setModelData(flow.apply(mlData).getTable());
         ParamUtils.updateExistingParams(model, getParamMap());
         return model;
+    }
+
+    /** Computes feature norm square. */
+    public static class ComputeNormSquare
+            implements MapFunction<Row, Tuple3<DenseVector, Double, Double>> {
+        private final String labelCol;
+        private final String featureCol;
+
+        public ComputeNormSquare(String labelCol, String featureCol) {
+            this.labelCol = labelCol;
+            this.featureCol = featureCol;
+        }
+
+        @Override
+        public Tuple3<DenseVector, Double, Double> map(Row value) {
+            Double label = ((Number) value.getField(labelCol)).doubleValue();
+            DenseVector feature = ((Vector) value.getField(featureCol)).toDense();
+            return Tuple3.of(feature, label, Math.pow(BLAS.norm2(feature), 2));
+        }
+    }
+
+    /**
+     * Generates knn model data. For Euclidean distance, distance = sqrt((a - b)^2) = (sqrt(a^2 +
+     * b^2 - 2ab)) So it can pre-calculate the L2 norm square of the feature vector, and when
+     * calculating the distance with another feature vector, only dot product is calculated. On the
+     * other hand, we assemble the feature vectors into a matrix, then it can use blas to accelerate
+     * the speed of calculating distances.
+     */
+    public static class GenModelData
+            implements MapPartitionFunction<Tuple3<DenseVector, Double, Double>, KnnModelData> {
+        @Override
+        public void mapPartition(
+                Iterable<Tuple3<DenseVector, Double, Double>> dataPoints,
+                Collector<KnnModelData> out) {
+            List<Tuple3<DenseVector, Double, Double>> bufferedDataPoints = new ArrayList<>();
+            for (Tuple3<DenseVector, Double, Double> dataPoint : dataPoints) {
+                bufferedDataPoints.add(dataPoint);
+            }
+            int featureDim = bufferedDataPoints.get(0).f0.size();
+            DenseMatrix packedFeatures = new DenseMatrix(featureDim, bufferedDataPoints.size());
+            DenseVector normSquares = new DenseVector(bufferedDataPoints.size());
+            DenseVector labels = new DenseVector(bufferedDataPoints.size());
+            int offset = 0;
+            for (Tuple3<DenseVector, Double, Double> dataPoint : bufferedDataPoints) {
+                System.arraycopy(
+                        dataPoint.f0.values,
+                        0,
+                        packedFeatures.values,
+                        offset * featureDim,
+                        featureDim);
+                labels.values[offset] = dataPoint.f1;
+                normSquares.values[offset++] = dataPoint.f2;
+            }
+            out.collect(new KnnModelData(packedFeatures, normSquares, labels));
+        }
     }
 
     @Override
@@ -83,75 +144,5 @@ public class Knn implements Estimator<Knn, KnnModel>, KnnParams<Knn> {
 
     public static Knn load(StreamTableEnvironment tEnv, String path) throws IOException {
         return ReadWriteUtils.loadStageParam(path);
-    }
-
-    /**
-     * Generates knn model data. For Euclidean distance, distance = sqrt((a - b)^2) = (sqrt(a^2 +
-     * b^2 - 2ab)) So it can pre-calculate the L2 norm square of the feature vector, and when
-     * calculating the distance with another feature vector, only dot product is calculated. On the
-     * other hand, we assemble the feature vectors into a matrix, then it can use blas to accelerate
-     * the speed of calculating distances.
-     *
-     * @param inputDataWithNormSqare Input data with norm square.
-     * @return Knn model.
-     */
-    private static DataStream<KnnModelData> genModelData(
-            DataStream<Tuple3<DenseVector, Double, Double>> inputDataWithNormSqare) {
-        DataStream<KnnModelData> modelData =
-                DataStreamUtils.mapPartition(
-                        inputDataWithNormSqare,
-                        new RichMapPartitionFunction<
-                                Tuple3<DenseVector, Double, Double>, KnnModelData>() {
-                            @Override
-                            public void mapPartition(
-                                    Iterable<Tuple3<DenseVector, Double, Double>> dataPoints,
-                                    Collector<KnnModelData> out) {
-                                List<Tuple3<DenseVector, Double, Double>> bufferedDataPoints =
-                                        new ArrayList<>();
-                                for (Tuple3<DenseVector, Double, Double> dataPoint : dataPoints) {
-                                    bufferedDataPoints.add(dataPoint);
-                                }
-                                int featureDim = bufferedDataPoints.get(0).f0.size();
-                                DenseMatrix packedFeatures =
-                                        new DenseMatrix(featureDim, bufferedDataPoints.size());
-                                DenseVector normSquares =
-                                        new DenseVector(bufferedDataPoints.size());
-                                DenseVector labels = new DenseVector(bufferedDataPoints.size());
-                                int offset = 0;
-                                for (Tuple3<DenseVector, Double, Double> dataPoint :
-                                        bufferedDataPoints) {
-                                    System.arraycopy(
-                                            dataPoint.f0.values,
-                                            0,
-                                            packedFeatures.values,
-                                            offset * featureDim,
-                                            featureDim);
-                                    labels.values[offset] = dataPoint.f1;
-                                    normSquares.values[offset++] = dataPoint.f2;
-                                }
-                                out.collect(new KnnModelData(packedFeatures, normSquares, labels));
-                            }
-                        });
-        modelData.getTransformation().setParallelism(1);
-        return modelData;
-    }
-
-    /**
-     * Computes feature norm square.
-     *
-     * @param inputData Input data.
-     * @return Input data with norm square.
-     */
-    private DataStream<Tuple3<DenseVector, Double, Double>> computeNormSquare(
-            DataStream<Row> inputData) {
-        return inputData.map(
-                new MapFunction<Row, Tuple3<DenseVector, Double, Double>>() {
-                    @Override
-                    public Tuple3<DenseVector, Double, Double> map(Row value) {
-                        Double label = ((Number) value.getField(getLabelCol())).doubleValue();
-                        DenseVector feature = ((Vector) value.getField(getFeaturesCol())).toDense();
-                        return Tuple3.of(feature, label, Math.pow(BLAS.norm2(feature), 2));
-                    }
-                });
     }
 }

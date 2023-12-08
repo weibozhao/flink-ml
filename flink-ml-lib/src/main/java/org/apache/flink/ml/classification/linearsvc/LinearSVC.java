@@ -18,22 +18,24 @@
 
 package org.apache.flink.ml.classification.linearsvc;
 
+import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.ml.api.Estimator;
-import org.apache.flink.ml.common.datastream.DataStreamUtils;
 import org.apache.flink.ml.common.feature.LabeledPointWithWeight;
 import org.apache.flink.ml.common.lossfunc.HingeLoss;
-import org.apache.flink.ml.common.optimizer.Optimizer;
-import org.apache.flink.ml.common.optimizer.SGD;
+import org.apache.flink.ml.common.ps.api.AlgorithmFlow;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
+import org.apache.flink.ml.common.ps.api.OptimizerComponent;
+import org.apache.flink.ml.common.ps.api.OptimizerComponent.Method;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
+import org.apache.flink.types.Row;
 import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
@@ -54,62 +56,75 @@ public class LinearSVC implements Estimator<LinearSVC, LinearSVCModel>, LinearSV
     }
 
     @Override
-    @SuppressWarnings({"rawTypes", "ConstantConditions"})
+    @SuppressWarnings({"rawTypes"})
     public LinearSVCModel fit(Table... inputs) {
         Preconditions.checkArgument(inputs.length == 1);
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
 
-        DataStream<LabeledPointWithWeight> trainData =
-                tEnv.toDataStream(inputs[0])
-                        .map(
-                                dataPoint -> {
-                                    double weight =
-                                            getWeightCol() == null
-                                                    ? 1.0
-                                                    : ((Number) dataPoint.getField(getWeightCol()))
-                                                            .doubleValue();
-                                    double label =
-                                            ((Number) dataPoint.getField(getLabelCol()))
-                                                    .doubleValue();
-                                    Preconditions.checkState(
-                                            Double.compare(0.0, label) == 0
-                                                    || Double.compare(1.0, label) == 0,
-                                            "LinearSVC only supports binary classification. But detected label: %s.",
-                                            label);
-                                    DenseVector features =
-                                            ((Vector) dataPoint.getField(getFeaturesCol()))
-                                                    .toDense();
-                                    return new LabeledPointWithWeight(features, label, weight);
-                                });
+        String dataName = "data";
+        String modelName = "modelName";
+        MLData mlData = MLData.of(inputs, new String[] {dataName});
 
-        DataStream<DenseVector> initModelData =
-                DataStreamUtils.reduce(
-                                trainData.map(x -> x.getFeatures().size()),
+        AlgorithmFlow algoFlow = new AlgorithmFlow();
+        algoFlow.add(
+                        new MLDataFunction(
+                                "map",
+                                new ParseSample(getLabelCol(), getWeightCol(), getFeaturesCol())))
+                .add(
+                        new MLDataFunction(
+                                        "map",
+                                        (MapFunction<LabeledPointWithWeight, Integer>)
+                                                (x -> x.getFeatures().size()))
+                                .output(modelName))
+                .add(
+                        new MLDataFunction(
+                                "reduce",
                                 (ReduceFunction<Integer>)
                                         (t0, t1) -> {
                                             Preconditions.checkState(
                                                     t0.equals(t1),
                                                     "The training data should all have same dimensions.");
                                             return t0;
-                                        })
-                        .map(DenseVector::new);
+                                        }))
+                .add(
+                        new MLDataFunction(
+                                "map", (MapFunction<Integer, DenseVector>) (DenseVector::new)))
+                .add(
+                        new OptimizerComponent(paramMap, Method.SGD, HingeLoss.INSTANCE)
+                                .withInitModel(modelName)
+                                .input(dataName)
+                                .output(modelName))
+                .add(
+                        new MLDataFunction(
+                                "map",
+                                (MapFunction<DenseVector, LinearSVCModelData>)
+                                        (LinearSVCModelData::new)));
 
-        Optimizer optimizer =
-                new SGD(
-                        getMaxIter(),
-                        getLearningRate(),
-                        getGlobalBatchSize(),
-                        getTol(),
-                        getReg(),
-                        getElasticNet());
-        DataStream<DenseVector> rawModelData =
-                optimizer.optimize(initModelData, trainData, HingeLoss.INSTANCE);
-
-        DataStream<LinearSVCModelData> modelData = rawModelData.map(LinearSVCModelData::new);
-        LinearSVCModel model = new LinearSVCModel().setModelData(tEnv.fromDataStream(modelData));
+        LinearSVCModel model =
+                new LinearSVCModel().setModelData(algoFlow.apply(mlData).getTable(modelName));
         ParamUtils.updateExistingParams(model, paramMap);
         return model;
+    }
+
+    /** Parse sample. */
+    public static class ParseSample implements MapFunction<Row, LabeledPointWithWeight> {
+        private final String labelCol, weightCol, featuresCol;
+
+        public ParseSample(String labelCol, String weightCol, String featuresCol) {
+            this.labelCol = labelCol;
+            this.weightCol = weightCol;
+            this.featuresCol = featuresCol;
+        }
+
+        @Override
+        public LabeledPointWithWeight map(Row dataPoint) {
+            double weight =
+                    weightCol == null
+                            ? 1.0
+                            : ((Number) dataPoint.getField(weightCol)).doubleValue();
+            double label = ((Number) dataPoint.getField(labelCol)).doubleValue();
+            DenseVector features = ((Vector) dataPoint.getField(featuresCol)).toDense();
+            return new LabeledPointWithWeight(features, label, weight);
+        }
     }
 
     @Override

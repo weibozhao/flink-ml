@@ -30,12 +30,11 @@ import java.util.List;
 
 /**
  * Stores the session information that is alive during the training process on {@link
- * WorkerOperator}. Note that the session information will be updated by each {@link
- * IterationStage}.
+ * WorkerOperator}. Note that the session information will be updated by each {@link BaseComponent}.
  *
  * <p>Subclasses should take care of the snapshot of object stored in {@link MLSession} if the
- * object satisfies that: the write-process is followed by a {@link PullStage}/{@link
- * AllReduceStage}/{@link ReduceScatterStage}, which is later again read by other stages.
+ * object satisfies that: the write-process is followed by a {@link PullComponent}/{@link
+ * PsAllReduceComponent}/{@link ReduceScatterComponent}, which is later again read by other stages.
  */
 public interface MLSession extends Serializable {
     /** Sets the current iteration ID. */

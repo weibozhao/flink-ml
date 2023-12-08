@@ -19,44 +19,32 @@
 package org.apache.flink.ml.common.fm;
 
 import org.apache.flink.api.common.functions.MapFunction;
+import org.apache.flink.api.common.functions.MapPartitionFunction;
 import org.apache.flink.api.common.functions.ReduceFunction;
-import org.apache.flink.api.common.typeinfo.PrimitiveArrayTypeInfo;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.common.typeutils.base.DoubleSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.api.java.typeutils.TupleTypeInfo;
-import org.apache.flink.iteration.DataStreamList;
-import org.apache.flink.ml.classification.fmclassifier.FmClassifierParams;
-import org.apache.flink.ml.common.fm.local.LocalAdaDelta;
-import org.apache.flink.ml.common.fm.local.LocalAdaGrad;
-import org.apache.flink.ml.common.fm.local.LocalAdam;
-import org.apache.flink.ml.common.fm.local.LocalFtrl;
-import org.apache.flink.ml.common.fm.local.LocalMomentum;
-import org.apache.flink.ml.common.fm.local.LocalRMSProp;
-import org.apache.flink.ml.common.fm.local.LocalSGD;
-import org.apache.flink.ml.common.fm.optim.AdaDelta;
-import org.apache.flink.ml.common.fm.optim.AdaGrad;
-import org.apache.flink.ml.common.fm.optim.Adam;
-import org.apache.flink.ml.common.fm.optim.FTRL;
-import org.apache.flink.ml.common.fm.optim.Momentum;
-import org.apache.flink.ml.common.fm.optim.RMSProp;
-import org.apache.flink.ml.common.fm.optim.SGD;
-import org.apache.flink.ml.common.ps.iterations.AllReduceStage;
-import org.apache.flink.ml.common.ps.iterations.IterationStageList;
-import org.apache.flink.ml.common.ps.iterations.ProcessStage;
-import org.apache.flink.ml.common.ps.iterations.PullStage;
-import org.apache.flink.ml.common.ps.iterations.PushStage;
+import org.apache.flink.ml.common.fm.optim.avg.AdaDelta;
+import org.apache.flink.ml.common.fm.optim.avg.AdaGrad;
+import org.apache.flink.ml.common.fm.optim.avg.Adam;
+import org.apache.flink.ml.common.fm.optim.avg.Ftrl;
+import org.apache.flink.ml.common.fm.optim.avg.Momentum;
+import org.apache.flink.ml.common.fm.optim.avg.RMSProp;
+import org.apache.flink.ml.common.fm.optim.avg.SGD;
+import org.apache.flink.ml.common.fm.optim.minibatch.FTRL;
+import org.apache.flink.ml.common.param.HasFeaturesCol;
+import org.apache.flink.ml.common.ps.api.AlgorithmFlow;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
+import org.apache.flink.ml.common.ps.iterations.ProcessComponent;
+import org.apache.flink.ml.common.ps.iterations.PsAllReduceComponent;
+import org.apache.flink.ml.common.ps.iterations.PullComponent;
+import org.apache.flink.ml.common.ps.iterations.PushComponent;
 import org.apache.flink.ml.common.ps.updater.ModelUpdater;
-import org.apache.flink.ml.common.ps.utils.TrainingUtils;
 import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.param.Param;
-import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
-import org.apache.flink.streaming.api.operators.BoundedOneInput;
-import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
-import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.types.Row;
+import org.apache.flink.util.Collector;
+import org.apache.flink.util.function.SerializableFunction;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -67,7 +55,7 @@ import java.util.List;
 import java.util.Map;
 
 /** Fm train. */
-public class BaseFmTrain implements FmClassifierParams<BaseFmTrain> {
+public class BaseFmTrain implements FmCommonParams<BaseFmTrain>, HasFeaturesCol<BaseFmTrain> {
 
     private final LossFunction lossFunction;
     private final Map<Param<?>, Object> params;
@@ -77,13 +65,7 @@ public class BaseFmTrain implements FmClassifierParams<BaseFmTrain> {
 
     public BaseFmTrain(boolean isReg, Map<Param<?>, Object> params) {
         if (isReg) {
-            double minTarget = -1.0e20;
-            double maxTarget = 1.0e20;
-            double d = maxTarget - minTarget;
-            d = Math.max(d, 1.0);
-            maxTarget = maxTarget + d * 0.2;
-            minTarget = minTarget - d * 0.2;
-            this.lossFunction = new SquareLoss(maxTarget, minTarget);
+            this.lossFunction = new SquareLoss();
         } else {
             this.lossFunction = new LogitLoss();
         }
@@ -91,7 +73,7 @@ public class BaseFmTrain implements FmClassifierParams<BaseFmTrain> {
         this.isReg = isReg;
     }
 
-    public DataStream<FmModelData> train(DataStream<Row> input) {
+    public MLData train(MLData input) {
         String weightCol = getWeightCol();
         String labelCol = getLabelCol();
         String featureCol = getFeaturesCol();
@@ -108,45 +90,6 @@ public class BaseFmTrain implements FmClassifierParams<BaseFmTrain> {
             regular[i] = Double.parseDouble(regularStr.split(",")[i].trim());
         }
 
-        DataStream<FmSample> trainData =
-                input.rebalance()
-                        .map(
-                                (MapFunction<Row, FmSample>)
-                                        dataPoint -> {
-                                            double weight =
-                                                    weightCol == null
-                                                            ? 1.0
-                                                            : ((Number)
-                                                                            dataPoint.getFieldAs(
-                                                                                    weightCol))
-                                                                    .doubleValue();
-                                            double label =
-                                                    ((Number) dataPoint.getFieldAs(labelCol))
-                                                            .doubleValue();
-                                            SparseVector vec;
-                                            if (dataPoint.getField(featureCol)
-                                                    instanceof SparseVector) {
-                                                vec = dataPoint.getFieldAs(featureCol);
-                                                long[] longIndices = new long[vec.indices.length];
-                                                for (int i = 0; i < longIndices.length; ++i) {
-                                                    longIndices[i] = vec.indices[i];
-                                                }
-                                                Tuple2<long[], double[]> features =
-                                                        Tuple2.of(longIndices, vec.values);
-
-                                                return new FmSample(features, label, weight);
-                                            } else if (dataPoint.getField(featureCol)
-                                                    instanceof Tuple2) {
-                                                return new FmSample(
-                                                        dataPoint.getFieldAs(featureCol),
-                                                        label,
-                                                        weight);
-                                            } else {
-                                                throw new RuntimeException(
-                                                        "feature type not support yet.");
-                                            }
-                                        });
-
         final double initStd = getInitStdEv();
         final double tol = getTol();
         final double learnRate = getLearnRate();
@@ -157,12 +100,14 @@ public class BaseFmTrain implements FmClassifierParams<BaseFmTrain> {
         String method = getMethod().toUpperCase();
         FmMLSession mlSession = new FmMLSession(getGlobalBatchSize());
 
-        ModelUpdater<Tuple2<Long, double[]>> fmUpdater;
-        ProcessStage<FmMLSession> computeIndices;
-        ProcessStage<FmMLSession> computeLocalVariable;
+        ModelUpdater fmUpdater;
+        ProcessComponent<FmMLSession> computeIndices;
+        ProcessComponent<FmMLSession> computeLocalVariable;
         switch (Method.valueOf(method)) {
             case ADAGRAD:
-                fmUpdater = new AdaGrad(dim, learnRate, initStd);
+                fmUpdater =
+                        new org.apache.flink.ml.common.fm.optim.minibatch.AdaGrad(
+                                dim, learnRate, initStd);
                 computeIndices = new ComputeFmIndices(dim[1] + dim[2]);
                 computeLocalVariable = new ComputeFmGradients(lossFunction, dim, regular);
                 break;
@@ -172,27 +117,37 @@ public class BaseFmTrain implements FmClassifierParams<BaseFmTrain> {
                 computeLocalVariable = new ComputeFmGradients(lossFunction, dim, regular);
                 break;
             case SGD:
-                fmUpdater = new SGD(dim, learnRate, initStd);
+                fmUpdater =
+                        new org.apache.flink.ml.common.fm.optim.minibatch.SGD(
+                                dim, learnRate, initStd);
                 computeIndices = new ComputeFmIndices(dim[1] + dim[2]);
                 computeLocalVariable = new ComputeFmGradients(lossFunction, dim, regular);
                 break;
             case ADAM:
-                fmUpdater = new Adam(dim, learnRate, initStd, beta1, beta2);
+                fmUpdater =
+                        new org.apache.flink.ml.common.fm.optim.minibatch.Adam(
+                                dim, learnRate, initStd, beta1, beta2);
                 computeIndices = new ComputeFmIndices(dim[1] + dim[2]);
                 computeLocalVariable = new ComputeFmGradients(lossFunction, dim, regular);
                 break;
             case MOMENTUM:
-                fmUpdater = new Momentum(dim, learnRate, initStd, gamma);
+                fmUpdater =
+                        new org.apache.flink.ml.common.fm.optim.minibatch.Momentum(
+                                dim, learnRate, initStd, gamma);
                 computeIndices = new ComputeFmIndices(dim[1] + dim[2]);
                 computeLocalVariable = new ComputeFmGradients(lossFunction, dim, regular);
                 break;
             case RMSPROP:
-                fmUpdater = new RMSProp(dim, learnRate, initStd, gamma);
+                fmUpdater =
+                        new org.apache.flink.ml.common.fm.optim.minibatch.RMSProp(
+                                dim, learnRate, initStd, gamma);
                 computeIndices = new ComputeFmIndices(dim[1] + dim[2]);
                 computeLocalVariable = new ComputeFmGradients(lossFunction, dim, regular);
                 break;
             case ADADELTA:
-                fmUpdater = new AdaDelta(dim, initStd, gamma);
+                fmUpdater =
+                        new org.apache.flink.ml.common.fm.optim.minibatch.AdaDelta(
+                                dim, initStd, gamma);
                 computeIndices = new ComputeFmIndices(dim[1] + dim[2]);
                 computeLocalVariable = new ComputeFmGradients(lossFunction, dim, regular);
                 break;
@@ -200,28 +155,26 @@ public class BaseFmTrain implements FmClassifierParams<BaseFmTrain> {
                 int modelSize = 2 * (dim[1] + dim[2]) + 1;
                 fmUpdater = new UpdateFmFactors(dim[1] + dim[2], modelSize, initStd);
                 computeIndices = new ComputeFmIndices(modelSize);
-                computeLocalVariable = new LocalAdaGrad(lossFunction, dim, regular, learnRate);
+                computeLocalVariable = new AdaGrad(lossFunction, dim, regular, learnRate);
                 break;
             case RMSPROP_AVG:
                 modelSize = 2 * (dim[1] + dim[2]) + 1;
                 fmUpdater = new UpdateFmFactors(dim[1] + dim[2], modelSize, initStd);
                 computeIndices = new ComputeFmIndices(modelSize);
-                computeLocalVariable =
-                        new LocalRMSProp(lossFunction, dim, regular, learnRate, gamma);
+                computeLocalVariable = new RMSProp(lossFunction, dim, regular, learnRate, gamma);
                 break;
             case MOMENTUM_AVG:
                 modelSize = 2 * (dim[1] + dim[2]) + 1;
                 fmUpdater = new UpdateFmFactors(dim[1] + dim[2], modelSize, initStd);
                 computeIndices = new ComputeFmIndices(modelSize);
-                computeLocalVariable =
-                        new LocalMomentum(lossFunction, dim, regular, learnRate, gamma);
+                computeLocalVariable = new Momentum(lossFunction, dim, regular, learnRate, gamma);
                 break;
             case FTRL_AVG:
                 modelSize = 3 * (dim[1] + dim[2]) + 1;
                 fmUpdater = new UpdateFmFactors(dim[1] + dim[2], modelSize, initStd);
                 computeIndices = new ComputeFmIndices(modelSize);
                 computeLocalVariable =
-                        new LocalFtrl(
+                        new Ftrl(
                                 lossFunction,
                                 dim,
                                 regular,
@@ -235,72 +188,110 @@ public class BaseFmTrain implements FmClassifierParams<BaseFmTrain> {
                 fmUpdater = new UpdateFmFactors(dim[1] + dim[2], modelSize, initStd);
                 computeIndices = new ComputeFmIndices(modelSize);
                 computeLocalVariable =
-                        new LocalAdam(lossFunction, dim, regular, learnRate, beta1, beta2);
+                        new Adam(lossFunction, dim, regular, learnRate, beta1, beta2);
                 break;
             case ADADELTA_AVG:
                 modelSize = 3 * (dim[1] + dim[2]) + 1;
                 fmUpdater = new UpdateFmFactors(dim[1] + dim[2], modelSize, initStd);
                 computeIndices = new ComputeFmIndices(modelSize);
-                computeLocalVariable = new LocalAdaDelta(lossFunction, dim, regular, gamma);
+                computeLocalVariable = new AdaDelta(lossFunction, dim, regular, gamma);
                 break;
             case SGD_AVG:
                 modelSize = dim[1] + dim[2] + 1;
                 fmUpdater = new UpdateFmFactors(dim[1] + dim[2], modelSize, initStd);
                 computeIndices = new ComputeFmIndices(modelSize);
-                computeLocalVariable = new LocalSGD(lossFunction, dim, regular, learnRate);
+                computeLocalVariable = new SGD(lossFunction, dim, regular, learnRate);
                 break;
             default:
                 throw new RuntimeException("not support yet.");
         }
 
-        IterationStageList<FmMLSession> iterationStages =
-                new IterationStageList<>(mlSession)
-                        .addStage(computeIndices)
-                        .addStage(new PullStage(() -> mlSession.indices, () -> mlSession.values))
-                        .addStage(computeLocalVariable)
-                        .addStage(new PushStage(() -> mlSession.indices, () -> mlSession.values))
-                        .addStage(
-                                new AllReduceStage<>(
+        AlgorithmFlow algorithmFlow =
+                new AlgorithmFlow(true)
+                        .add(new MLDataFunction("rebalance"))
+                        .add(
+                                new MLDataFunction(
+                                        "map",
+                                        new TransformSample(weightCol, labelCol, featureCol)))
+                        .startServerIteration(mlSession, fmUpdater)
+                        .add(computeIndices)
+                        .add(new PullComponent(() -> mlSession.indices, () -> mlSession.values))
+                        .add(computeLocalVariable)
+                        .add(new PushComponent(() -> mlSession.indices, () -> mlSession.values))
+                        .add(
+                                new PsAllReduceComponent<>(
                                         () -> mlSession.localLoss,
                                         () -> mlSession.globalLoss,
                                         (ReduceFunction<Double[]>) BaseFmTrain::sumDoubleArray,
                                         DoubleSerializer.INSTANCE,
                                         1))
-                        .setTerminationCriteria(
-                                o -> {
-                                    int numMiniBatch = o.globalLoss[2].intValue() / o.numWorkers;
-                                    if ((o.iterationId - 1) % numMiniBatch == 0
-                                            || o.iterationId == maxIter * numMiniBatch) {
-                                        System.out.println(
-                                                "Loss at epoch-"
-                                                        + (o.iterationId / numMiniBatch)
-                                                        + " is: "
-                                                        + o.globalLoss[0] / o.globalLoss[1]
-                                                        + ".\n");
-                                    }
-                                    return o.iterationId >= maxIter * numMiniBatch
-                                            || o.globalLoss[0] < tol;
-                                });
+                        .endServerIteration(new Termination(maxIter, tol))
+                        .add(new MLDataFunction("mapPartition", new GenerateModelData(dim, isReg)));
 
-        int parallelism = trainData.getParallelism();
-        DataStreamList resultList =
-                TrainingUtils.train(
-                        trainData,
-                        iterationStages,
-                        new TupleTypeInfo<>(
-                                Types.LONG,
-                                PrimitiveArrayTypeInfo.DOUBLE_PRIMITIVE_ARRAY_TYPE_INFO),
-                        fmUpdater,
-                        Math.max(1, parallelism / 2));
+        return algorithmFlow.apply(input);
+    }
 
-        DataStream<Tuple2<Long, double[]>> optResult = resultList.get(0);
+    /** Comments. */
+    public static class TransformSample implements MapFunction<Row, FmSample> {
 
-        return optResult
-                .transform(
-                        "generateModelData",
-                        TypeInformation.of(FmModelData.class),
-                        new GenerateModelData(dim, isReg))
-                .name("generateModelData");
+        private final String weightCol;
+        private final String labelCol;
+        private final String featureCol;
+
+        public TransformSample(String weightCol, String labelCol, String featureCol) {
+            this.weightCol = weightCol;
+            this.labelCol = labelCol;
+            this.featureCol = featureCol;
+        }
+
+        @Override
+        public FmSample map(Row row) {
+            double weight =
+                    weightCol == null ? 1.0 : ((Number) row.getFieldAs(weightCol)).doubleValue();
+            double label = ((Number) row.getFieldAs(labelCol)).doubleValue();
+            SparseVector vec;
+            if (row.getField(featureCol) instanceof SparseVector) {
+                vec = row.getFieldAs(featureCol);
+                long[] longIndices = new long[vec.indices.length];
+                for (int i = 0; i < longIndices.length; ++i) {
+                    longIndices[i] = vec.indices[i];
+                }
+                Tuple2<long[], double[]> features = Tuple2.of(longIndices, vec.values);
+
+                return new FmSample(features, label, weight);
+            } else if (row.getField(featureCol) instanceof Tuple2) {
+                return new FmSample(row.getFieldAs(featureCol), label, weight);
+            } else {
+                throw new RuntimeException("feature type not support yet.");
+            }
+        }
+    }
+
+    /** Comments. */
+    public static class Termination implements SerializableFunction<FmMLSession, Boolean> {
+
+        private final int maxIter;
+        private final double tol;
+
+        public Termination(int maxIter, double tol) {
+            this.maxIter = maxIter;
+            this.tol = tol;
+        }
+
+        @Override
+        public Boolean apply(FmMLSession mlSession) {
+            int numMiniBatch = mlSession.globalLoss[2].intValue() / mlSession.numWorkers;
+            if ((mlSession.iterationId - 1) % numMiniBatch == 0
+                    || mlSession.iterationId == maxIter * numMiniBatch) {
+                System.out.println(
+                        "Loss at epoch-"
+                                + (mlSession.iterationId / numMiniBatch)
+                                + " is: "
+                                + mlSession.globalLoss[0] / mlSession.globalLoss[1]
+                                + ".\n");
+            }
+            return mlSession.iterationId >= maxIter * numMiniBatch || mlSession.globalLoss[0] < tol;
+        }
     }
 
     @Override
@@ -309,9 +300,7 @@ public class BaseFmTrain implements FmClassifierParams<BaseFmTrain> {
     }
 
     /** Generates the ModelData from the results of iteration. */
-    private static class GenerateModelData extends AbstractStreamOperator<FmModelData>
-            implements OneInputStreamOperator<Tuple2<Long, double[]>, FmModelData>,
-                    BoundedOneInput {
+    private static class GenerateModelData implements MapPartitionFunction<Object, FmModelData> {
 
         private final List<Tuple2<Long, float[]>> factors = new ArrayList<>();
         private final int[] dim;
@@ -323,20 +312,17 @@ public class BaseFmTrain implements FmClassifierParams<BaseFmTrain> {
         }
 
         @Override
-        public void endInput() throws Exception {
-            LOG.info("Generates model   ... " + System.currentTimeMillis());
-            output.collect(new StreamRecord<>(new FmModelData(factors, dim, isReg)));
-        }
-
-        @Override
-        public void processElement(StreamRecord<Tuple2<Long, double[]>> streamRecord)
-                throws Exception {
-            Tuple2<Long, double[]> t2 = streamRecord.getValue();
-            float[] factor = new float[t2.f1.length];
-            for (int i = 0; i < factor.length; ++i) {
-                factor[i] = (float) t2.f1[i];
+        @SuppressWarnings("unchecked")
+        public void mapPartition(Iterable<Object> iterable, Collector<FmModelData> collector) {
+            for (Object ele : iterable) {
+                Tuple2<Long, double[]> t2 = (Tuple2<Long, double[]>) ele;
+                float[] factor = new float[t2.f1.length];
+                for (int i = 0; i < factor.length; ++i) {
+                    factor[i] = (float) t2.f1[i];
+                }
+                factors.add(Tuple2.of(t2.f0, factor));
             }
-            factors.add(Tuple2.of(t2.f0, factor));
+            collector.collect(new FmModelData(factors, dim, isReg));
         }
     }
 
@@ -352,12 +338,16 @@ public class BaseFmTrain implements FmClassifierParams<BaseFmTrain> {
 
     /** loss function for regression task. */
     public static final class SquareLoss implements LossFunction {
-        private final double maxTarget;
-        private final double minTarget;
+        private double maxTarget;
+        private double minTarget;
 
-        public SquareLoss(double maxTarget, double minTarget) {
-            this.maxTarget = maxTarget;
-            this.minTarget = minTarget;
+        public SquareLoss() {
+            minTarget = -1.0e20;
+            maxTarget = 1.0e20;
+            double d = maxTarget - minTarget;
+            d = Math.max(d, 1.0);
+            maxTarget = maxTarget + d * 0.2;
+            minTarget = minTarget - d * 0.2;
         }
 
         @Override
@@ -376,7 +366,7 @@ public class BaseFmTrain implements FmClassifierParams<BaseFmTrain> {
         }
     }
 
-    private static Double[] sumDoubleArray(Double[] array1, Double[] array2) {
+    public static Double[] sumDoubleArray(Double[] array1, Double[] array2) {
         for (int i = 0; i < array1.length; i++) {
             array2[i] += array1[i];
         }
@@ -385,14 +375,15 @@ public class BaseFmTrain implements FmClassifierParams<BaseFmTrain> {
 
     /** loss function for binary classification task. */
     public static final class LogitLoss implements LossFunction {
+        private static final double eps = 1.0e-15;
 
         @Override
         public double loss(double yTruth, double y) { // yTruth in {0, 1}
             double logit;
             if (y < -37) {
-                logit = EPS;
+                logit = eps;
             } else if (y > 34) {
-                logit = 1.0 - EPS;
+                logit = 1.0 - eps;
             } else {
                 logit = 1.0 / (1.0 + Math.exp(-y));
             }

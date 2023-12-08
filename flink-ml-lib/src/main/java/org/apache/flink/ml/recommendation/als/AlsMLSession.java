@@ -19,7 +19,7 @@
 package org.apache.flink.ml.recommendation.als;
 
 import org.apache.flink.ml.common.ps.iterations.MLSessionImpl;
-import org.apache.flink.ml.common.ps.sarray.SharedDoubleArray;
+import org.apache.flink.ml.common.ps.sarray.SharedFloatArray;
 import org.apache.flink.ml.common.ps.sarray.SharedLongArray;
 import org.apache.flink.ml.recommendation.als.Als.Ratings;
 
@@ -40,19 +40,19 @@ public class AlsMLSession extends MLSessionImpl<Ratings> {
     public SharedLongArray pullIndices = new SharedLongArray();
 
     /** Values for pulling the data. */
-    public SharedDoubleArray pullValues = new SharedDoubleArray();
+    public SharedFloatArray pullValues = new SharedFloatArray();
 
     /** Indices for pushing the data. */
     public SharedLongArray pushIndices = new SharedLongArray();
 
     /** Values for pushing the data. */
-    public SharedDoubleArray pushValues = new SharedDoubleArray();
+    public SharedFloatArray pushValues = new SharedFloatArray();
 
     /** The all reduce buffer for computing yty. */
     public double[][] allReduceBuffer;
 
     /** The aggregator array for computing yty. */
-    public SharedDoubleArray aggregatorSDAArray;
+    public SharedFloatArray aggregatorSDAArray;
 
     /** Ratings data for current iteration. */
     public BlockData batchData;
@@ -105,7 +105,7 @@ public class AlsMLSession extends MLSessionImpl<Ratings> {
         this.parallelism = parallelism;
         this.implicit = implicit;
         if (implicit) {
-            aggregatorSDAArray = new SharedDoubleArray(new double[rank * rank]);
+            aggregatorSDAArray = new SharedFloatArray(new float[rank * rank]);
             allReduceBuffer = new double[][] {new double[rank * rank]};
         }
     }

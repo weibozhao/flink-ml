@@ -45,7 +45,7 @@ public class CategoricalFeatureSplitter extends HistogramFeatureSplitter {
         HessianImpurity missing = emptyImpurity();
         countTotalMissing(total, missing);
 
-        if (total.getNumInstances() <= minSamplesPerLeaf) {
+        if (total.getNumInstances() <= minInstancesPerNode) {
             return Split.CategoricalSplit.invalid(total.prediction());
         }
 

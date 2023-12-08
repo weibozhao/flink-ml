@@ -22,15 +22,14 @@ import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.ml.api.Transformer;
 import org.apache.flink.ml.common.datastream.TableUtils;
+import org.apache.flink.ml.common.ps.api.MLData;
 import org.apache.flink.ml.linalg.Vectors;
 import org.apache.flink.ml.linalg.typeinfo.SparseVectorTypeInfo;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Preconditions;
@@ -67,9 +66,6 @@ public class HashingTF implements Transformer<HashingTF>, HashingTFParams<Hashin
     @Override
     public Table[] transform(Table... inputs) {
         Preconditions.checkArgument(inputs.length == 1);
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
-
         ResolvedSchema tableSchema = inputs[0].getResolvedSchema();
 
         RowTypeInfo inputTypeInfo = TableUtils.getRowTypeInfo(tableSchema);
@@ -79,12 +75,11 @@ public class HashingTF implements Transformer<HashingTF>, HashingTFParams<Hashin
                                 inputTypeInfo.getFieldTypes(), SparseVectorTypeInfo.INSTANCE),
                         ArrayUtils.addAll(inputTypeInfo.getFieldNames(), getOutputCol()));
 
-        DataStream<Row> output =
-                tEnv.toDataStream(inputs[0])
-                        .map(
-                                new HashTFFunction(getInputCol(), getBinary(), getNumFeatures()),
-                                outputTypeInfo);
-        return new Table[] {tEnv.fromDataStream(output)};
+        MLData mlData = MLData.of(inputs);
+        mlData.map(
+                new HashTFFunction(getInputCol(), getBinary(), getNumFeatures()), outputTypeInfo);
+
+        return mlData.getTables();
     }
 
     @Override

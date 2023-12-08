@@ -96,6 +96,7 @@ public class CountVectorizerTest extends AbstractTestBase {
     public void before() {
         env = TestUtils.getExecutionEnvironment();
         tEnv = StreamTableEnvironment.create(env);
+        env.getConfig().enableGenericTypes();
 
         inputTable = tEnv.fromDataStream(env.fromCollection(INPUT_DATA)).as("input");
     }

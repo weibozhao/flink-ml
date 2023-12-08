@@ -34,17 +34,17 @@ import java.util.Iterator;
  */
 public interface ModelUpdater<MT> extends Serializable {
     /** Applies the push to update the model data, e.g., using gradient to update model. */
-    void update(long[] keys, double[] values);
+    void update(long[] keys, MT values);
 
     /** Retrieves the model data of the given keys. */
-    double[] get(long[] keys);
+    MT get(long[] keys);
 
     /**
      * Returns model segments. The model segments are continuously updated/retrieved by
-     * push/pull(i.e., {@link ModelUpdater#update(long[], double[])} and {@link
+     * push/pull(i.e., {@link ModelUpdater#update(long[], MT)} and {@link
      * ModelUpdater#get(long[])}).
      */
-    Iterator<MT> getModelSegments();
+    Iterator<Object> getModelSegments();
 
     /** Recovers the model data from state. */
     void initializeState(StateInitializationContext context) throws Exception;

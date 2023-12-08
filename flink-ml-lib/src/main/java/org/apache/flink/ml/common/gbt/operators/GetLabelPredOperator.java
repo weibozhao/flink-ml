@@ -32,12 +32,14 @@ public class GetLabelPredOperator extends AbstractSharedObjectsStreamOperator<Ro
 
     private static final Sigmoid sigmoid = new Sigmoid();
     private final String labelCol;
+    private final String weightCol;
     private final String probCol;
     private final int interval;
 
-    public GetLabelPredOperator(String labelCol, String probCol, int interval) {
+    public GetLabelPredOperator(String labelCol, String probCol, String weightCol, int interval) {
         super();
         this.labelCol = labelCol;
+        this.weightCol = weightCol;
         this.probCol = probCol;
         this.interval = interval;
     }
@@ -61,6 +63,7 @@ public class GetLabelPredOperator extends AbstractSharedObjectsStreamOperator<Ro
                     Row row = Row.withNames();
                     for (int i = 0; i < instances.length; i += 1) {
                         row.setField(labelCol, instances[i].label);
+                        row.setField(weightCol, instances[i].weight);
                         row.setField(probCol, sigmoid.value(pgh[3 * i]));
                         output.collect(new StreamRecord<>(row));
                     }

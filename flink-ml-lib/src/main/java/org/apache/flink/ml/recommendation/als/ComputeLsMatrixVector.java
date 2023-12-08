@@ -19,7 +19,7 @@
 package org.apache.flink.ml.recommendation.als;
 
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.ml.common.ps.iterations.ProcessStage;
+import org.apache.flink.ml.common.ps.iterations.ProcessComponent;
 import org.apache.flink.ml.linalg.BLAS;
 import org.apache.flink.ml.linalg.DenseMatrix;
 import org.apache.flink.ml.linalg.DenseVector;
@@ -37,7 +37,7 @@ import java.util.List;
  * An iteration stage that uses the pulled model values and batch data to compute the least square
  * matrices and vectors.
  */
-public class ComputeLsMatrixVector extends ProcessStage<AlsMLSession> {
+public class ComputeLsMatrixVector extends ProcessComponent<AlsMLSession> {
     private final int rank;
     private final int matrixOffset;
     private final boolean implicit;
@@ -80,7 +80,9 @@ public class ComputeLsMatrixVector extends ProcessStage<AlsMLSession> {
         } else {
             for (Tuple2<Long, double[]> matrix : matrices) {
                 session.pushIndices.add(matrix.f0);
-                session.pushValues.addAll(matrix.f1);
+                for (int i = 0; i < matrix.f1.length; ++i) {
+                    session.pushValues.add((float) matrix.f1[i]);
+                }
             }
             LongOpenHashSet pullSet = new LongOpenHashSet();
             for (Ratings r : session.batchData.ratingsList) {
@@ -123,8 +125,9 @@ public class ComputeLsMatrixVector extends ProcessStage<AlsMLSession> {
                 for (int i = 0; i < nb.length; i++) {
                     long index = nb[i];
                     int realIndex = session.reusedNeighborIndexMapping.get(index);
-                    System.arraycopy(session.pullValues.elements(), realIndex * rank, tmp, 0, rank);
-
+                    for (int j = 0; j < rank; ++j) {
+                        tmp[j] = session.pullValues.elements()[realIndex * rank + j];
+                    }
                     ls.add(new DenseVector(tmp), rating[i], 1.0);
                 }
                 ls.regularize(nb.length * lambda);
@@ -146,8 +149,9 @@ public class ComputeLsMatrixVector extends ProcessStage<AlsMLSession> {
                         c1 = alpha * r;
                     }
                     int realIndex = session.reusedNeighborIndexMapping.get(index);
-                    System.arraycopy(session.pullValues.elements(), realIndex * rank, tmp, 0, rank);
-
+                    for (int j = 0; j < rank; ++j) {
+                        tmp[j] = session.pullValues.elements()[realIndex * rank + j];
+                    }
                     ls.add(new DenseVector(tmp), ((r > 0.0) ? (1.0 + c1) : 0.0), c1);
                 }
 

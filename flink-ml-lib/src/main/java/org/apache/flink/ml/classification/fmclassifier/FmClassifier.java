@@ -20,14 +20,12 @@ package org.apache.flink.ml.classification.fmclassifier;
 
 import org.apache.flink.ml.api.Estimator;
 import org.apache.flink.ml.common.fm.BaseFmTrain;
-import org.apache.flink.ml.common.fm.FmModelData;
+import org.apache.flink.ml.common.ps.api.MLData;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
@@ -47,12 +45,9 @@ public class FmClassifier
     @Override
     public FmClassifierModel fit(Table... inputs) {
         Preconditions.checkArgument(inputs.length == 1);
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
-        DataStream<FmModelData> modelData =
-                new BaseFmTrain(false, paramMap).train(tEnv.toDataStream(inputs[0]));
-        FmClassifierModel model =
-                new FmClassifierModel().setModelData(tEnv.fromDataStream(modelData));
+        MLData modelData =
+                new BaseFmTrain(false, paramMap).train(MLData.of(inputs, new String[] {"data"}));
+        FmClassifierModel model = new FmClassifierModel().setModelData(modelData.getTable());
         ParamUtils.updateExistingParams(model, paramMap);
         return model;
     }

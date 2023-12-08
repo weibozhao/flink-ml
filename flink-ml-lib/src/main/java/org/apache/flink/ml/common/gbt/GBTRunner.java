@@ -200,9 +200,7 @@ public class GBTRunner {
         final Set<Param<?>> unsupported =
                 new HashSet<>(
                         Arrays.asList(
-                                BaseGBTParams.WEIGHT_COL,
-                                BaseGBTParams.LEAF_COL,
-                                BaseGBTParams.VALIDATION_INDICATOR_COL));
+                                BaseGBTParams.LEAF_COL, BaseGBTParams.VALIDATION_INDICATOR_COL));
         List<Param<?>> unsupportedButSet =
                 unsupported.stream()
                         .filter(d -> null != paramMap.get(d))
@@ -221,6 +219,7 @@ public class GBTRunner {
         strategy.isInputVector = isInputVector;
         strategy.labelCol = estimator.getLabelCol();
         strategy.categoricalCols = estimator.getCategoricalCols();
+        strategy.weightCol = estimator.getWeightCol();
 
         strategy.maxDepth = estimator.getMaxDepth();
         strategy.maxBins = estimator.getMaxBins();
@@ -263,7 +262,8 @@ public class GBTRunner {
         DataStream<Row> data = tEnv.toDataStream(dataTable);
         if (null == strategy.baseScore) {
             LOG.info("Calculate prior by scanning data.");
-            return DataStreamUtils.aggregate(data, new LabelSumCountFunction(strategy.labelCol))
+            return DataStreamUtils.aggregate(
+                            data, new LabelSumCountFunction(strategy.labelCol, strategy.weightCol))
                     .map(new CalcPriorFunction(strategy.lossType));
         } else {
             LOG.info("Use prior based on provided base score: {}", strategy.baseScore);
@@ -317,37 +317,41 @@ public class GBTRunner {
     }
 
     private static class LabelSumCountFunction
-            implements AggregateFunction<Row, Tuple2<Double, Long>, Tuple2<Double, Long>> {
+            implements AggregateFunction<Row, Tuple2<Double, Double>, Tuple2<Double, Double>> {
 
         private final String labelCol;
+        private final String weightCol;
 
-        private LabelSumCountFunction(String labelCol) {
+        private LabelSumCountFunction(String labelCol, String weightCol) {
             this.labelCol = labelCol;
+            this.weightCol = weightCol;
         }
 
         @Override
-        public Tuple2<Double, Long> createAccumulator() {
-            return Tuple2.of(0., 0L);
+        public Tuple2<Double, Double> createAccumulator() {
+            return Tuple2.of(0., 0.);
         }
 
         @Override
-        public Tuple2<Double, Long> add(Row value, Tuple2<Double, Long> accumulator) {
+        public Tuple2<Double, Double> add(Row value, Tuple2<Double, Double> accumulator) {
             double label = ((Number) value.getFieldAs(labelCol)).doubleValue();
-            return Tuple2.of(accumulator.f0 + label, accumulator.f1 + 1);
+            double weight =
+                    null != weightCol ? ((Number) value.getFieldAs(weightCol)).doubleValue() : 1.;
+            return Tuple2.of(accumulator.f0 + label * weight, accumulator.f1 + weight);
         }
 
         @Override
-        public Tuple2<Double, Long> getResult(Tuple2<Double, Long> accumulator) {
+        public Tuple2<Double, Double> getResult(Tuple2<Double, Double> accumulator) {
             return accumulator;
         }
 
         @Override
-        public Tuple2<Double, Long> merge(Tuple2<Double, Long> a, Tuple2<Double, Long> b) {
+        public Tuple2<Double, Double> merge(Tuple2<Double, Double> a, Tuple2<Double, Double> b) {
             return Tuple2.of(a.f0 + b.f0, a.f1 + b.f1);
         }
     }
 
-    private static class CalcPriorFunction implements MapFunction<Tuple2<Double, Long>, Double> {
+    private static class CalcPriorFunction implements MapFunction<Tuple2<Double, Double>, Double> {
         private final LossType lossType;
 
         public CalcPriorFunction(LossType lossType) {
@@ -355,7 +359,7 @@ public class GBTRunner {
         }
 
         @Override
-        public Double map(Tuple2<Double, Long> value) {
+        public Double map(Tuple2<Double, Double> value) {
             switch (lossType) {
                 case LOGISTIC:
                     return Math.log(value.f0 / (value.f1 - value.f0));

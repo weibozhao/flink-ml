@@ -20,10 +20,8 @@ package org.apache.flink.ml.common.ps.sarray;
 
 import it.unimi.dsi.fastutil.doubles.DoubleArrayList;
 
-import java.io.Serializable;
-
 /** A resizable double array that can be shared among different iterations for memory efficiency. */
-public class SharedDoubleArray implements Serializable {
+public class SharedDoubleArray implements SharedNumericalArray {
 
     /** The underlying DoubleArrayList that holds the elements. */
     private final DoubleArrayList doubles;

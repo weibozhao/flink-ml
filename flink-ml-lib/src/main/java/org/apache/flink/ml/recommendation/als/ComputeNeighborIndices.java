@@ -18,12 +18,12 @@
 
 package org.apache.flink.ml.recommendation.als;
 
-import org.apache.flink.ml.common.ps.iterations.ProcessStage;
+import org.apache.flink.ml.common.ps.iterations.ProcessComponent;
 import org.apache.flink.ml.recommendation.als.Als.Ratings;
 import org.apache.flink.ml.recommendation.als.AlsMLSession.BlockData;
 
 /** An iteration stage that computes the indices needed to update factors. */
-public class ComputeNeighborIndices extends ProcessStage<AlsMLSession> {
+public class ComputeNeighborIndices extends ProcessComponent<AlsMLSession> {
 
     private final int rank;
 

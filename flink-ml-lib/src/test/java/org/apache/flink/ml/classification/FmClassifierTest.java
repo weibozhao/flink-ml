@@ -1,23 +1,14 @@
 package org.apache.flink.ml.classification;
 
-import org.apache.flink.api.common.eventtime.WatermarkStrategy;
-import org.apache.flink.api.common.functions.MapFunction;
-import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
-import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
-import org.apache.flink.connector.file.src.FileSource;
-import org.apache.flink.connector.file.src.reader.TextLineInputFormat;
 import org.apache.flink.ml.classification.fmclassifier.FmClassifier;
 import org.apache.flink.ml.classification.fmclassifier.FmClassifierModel;
-import org.apache.flink.ml.common.datastream.TableUtils;
 import org.apache.flink.ml.common.fm.FmModelData;
 import org.apache.flink.ml.common.fm.FmModelDataUtil;
 import org.apache.flink.ml.common.fm.FmModelServable;
-import org.apache.flink.ml.evaluation.binaryclassification.BinaryClassificationEvaluator;
-import org.apache.flink.ml.evaluation.binaryclassification.BinaryClassificationEvaluatorParams;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.linalg.Vectors;
@@ -25,10 +16,8 @@ import org.apache.flink.ml.linalg.typeinfo.SparseVectorTypeInfo;
 import org.apache.flink.ml.servable.api.DataFrame;
 import org.apache.flink.ml.servable.types.BasicType;
 import org.apache.flink.ml.servable.types.DataTypes;
-import org.apache.flink.ml.util.FileUtils;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.TestUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -58,6 +47,8 @@ public class FmClassifierTest {
     private StreamExecutionEnvironment env;
 
     private StreamTableEnvironment tEnv;
+
+    private static final double EPS = 1.0e-8;
 
     private static final List<Row> trainRows =
             Arrays.asList(
@@ -146,7 +137,7 @@ public class FmClassifierTest {
                         new ArrayList<>(Arrays.asList("features", "label", "weight")),
                         new ArrayList<>(
                                 Arrays.asList(
-                                        DataTypes.vectorType(BasicType.DOUBLE),
+                                        DataTypes.VECTOR(BasicType.DOUBLE),
                                         DataTypes.DOUBLE,
                                         DataTypes.DOUBLE)),
                         testRows);
@@ -172,7 +163,7 @@ public class FmClassifierTest {
         assertEquals("1,1,10", fmClassifier.getDim());
         assertEquals("0.01,0.01,0.01", fmClassifier.getLambda());
         assertEquals(0.9, fmClassifier.getGamma(), TOLERANCE);
-        assertEquals("AdaGrad", fmClassifier.getMethod());
+        assertEquals("AdaGrad_AVG", fmClassifier.getMethod());
         assertEquals("prediction", fmClassifier.getPredictionCol());
         assertEquals("rawPrediction", fmClassifier.getRawPredictionCol());
 
@@ -265,7 +256,7 @@ public class FmClassifierTest {
         Assert.assertEquals(
                 new DenseVector(new double[] {0.5526637687877789, 0.4473362312122211}),
                 row.getFieldAs("raw"));
-        Assert.assertEquals(0.0, row.getFieldAs("predict"), 1.0e-8);
+        Assert.assertEquals(0.0, row.getFieldAs("predict"), EPS);
     }
 
     @Test
@@ -304,31 +295,31 @@ public class FmClassifierTest {
         Assert.assertEquals(
                 new DenseVector(new double[] {0.5904058840267317, 0.4095941159732684}),
                 row.getFieldAs("raw"));
-        Assert.assertEquals(0.0, row.getFieldAs("predict"), 1.0e-8);
+        Assert.assertEquals(0.0, row.getFieldAs("predict"), EPS);
         Assert.assertEquals(
                 new DenseVector(new double[] {0.729953571655609, 0.27004642834439097}),
                 row.getFieldAs("raw1"));
-        Assert.assertEquals(0.0, row.getFieldAs("predict1"), 1.0e-8);
+        Assert.assertEquals(0.0, row.getFieldAs("predict1"), EPS);
         Assert.assertEquals(
                 new DenseVector(new double[] {0.6266079134898535, 0.3733920865101466}),
                 row.getFieldAs("raw2"));
-        Assert.assertEquals(0.0, row.getFieldAs("predict2"), 1.0e-8);
+        Assert.assertEquals(0.0, row.getFieldAs("predict2"), EPS);
         Assert.assertEquals(
                 new DenseVector(new double[] {0.8983325824031893, 0.10166741759681079}),
                 row.getFieldAs("raw3"));
-        Assert.assertEquals(0.0, row.getFieldAs("predict3"), 1.0e-8);
+        Assert.assertEquals(0.0, row.getFieldAs("predict3"), EPS);
         Assert.assertEquals(
                 new DenseVector(new double[] {0.5407975623491657, 0.45920243765083435}),
                 row.getFieldAs("raw4"));
-        Assert.assertEquals(0.0, row.getFieldAs("predict4"), 1.0e-8);
+        Assert.assertEquals(0.0, row.getFieldAs("predict4"), EPS);
         Assert.assertEquals(
                 new DenseVector(new double[] {0.5012678027456665, 0.49873219725433343}),
                 row.getFieldAs("raw5"));
-        Assert.assertEquals(0.0, row.getFieldAs("predict5"), 1.0e-8);
+        Assert.assertEquals(0.0, row.getFieldAs("predict5"), EPS);
         Assert.assertEquals(
                 new DenseVector(new double[] {0.7489696526738796, 0.2510303473261204}),
                 row.getFieldAs("raw6"));
-        Assert.assertEquals(0.0, row.getFieldAs("predict6"), 1.0e-8);
+        Assert.assertEquals(0.0, row.getFieldAs("predict6"), EPS);
     }
 
     @Test
@@ -374,33 +365,33 @@ public class FmClassifierTest {
 
         Row row = (Row) IteratorUtils.toList(tEnv.toDataStream(result).executeAndCollect()).get(0);
         Assert.assertEquals(
-                new DenseVector(new double[] {0.6446025203361847, 0.35539747966381535}),
+                new DenseVector(new double[] {0.6222824725884459, 0.3777175274115541}),
                 row.getFieldAs("raw"));
-        Assert.assertEquals(0.0, row.getFieldAs("predict"), 1.0e-8);
+        Assert.assertEquals(0.0, row.getFieldAs("predict"), EPS);
         Assert.assertEquals(
-                new DenseVector(new double[] {0.8210159106144985, 0.17898408938550148}),
+                new DenseVector(new double[] {0.7642361648555054, 0.23576383514449464}),
                 row.getFieldAs("raw1"));
-        Assert.assertEquals(0.0, row.getFieldAs("predict1"), 1.0e-8);
+        Assert.assertEquals(0.0, row.getFieldAs("predict1"), EPS);
         Assert.assertEquals(
-                new DenseVector(new double[] {0.9166500601744068, 0.08334993982559322}),
+                new DenseVector(new double[] {0.9525498755129197, 0.04745012448708026}),
                 row.getFieldAs("raw2"));
-        Assert.assertEquals(0.0, row.getFieldAs("predict2"), 1.0e-8);
+        Assert.assertEquals(0.0, row.getFieldAs("predict2"), EPS);
         Assert.assertEquals(
-                new DenseVector(new double[] {0.8992951746544293, 0.10070482534557065}),
+                new DenseVector(new double[] {0.8989264982232361, 0.10107350177676386}),
                 row.getFieldAs("raw3"));
-        Assert.assertEquals(0.0, row.getFieldAs("predict3"), 1.0e-8);
+        Assert.assertEquals(0.0, row.getFieldAs("predict3"), EPS);
         Assert.assertEquals(
-                new DenseVector(new double[] {0.8189154438666246, 0.18108455613337537}),
+                new DenseVector(new double[] {0.6936312821769035, 0.3063687178230965}),
                 row.getFieldAs("raw4"));
-        Assert.assertEquals(0.0, row.getFieldAs("predict4"), 1.0e-8);
+        Assert.assertEquals(0.0, row.getFieldAs("predict4"), EPS);
         Assert.assertEquals(
-                new DenseVector(new double[] {0.5232333579591517, 0.47676664204084834}),
+                new DenseVector(new double[] {0.5487740113839099, 0.4512259886160901}),
                 row.getFieldAs("raw5"));
-        Assert.assertEquals(0.0, row.getFieldAs("predict5"), 1.0e-8);
+        Assert.assertEquals(0.0, row.getFieldAs("predict5"), EPS);
         Assert.assertEquals(
-                new DenseVector(new double[] {0.9111088482748075, 0.08889115172519249}),
+                new DenseVector(new double[] {0.8141105054912483, 0.18588949450875167}),
                 row.getFieldAs("raw6"));
-        Assert.assertEquals(0.0, row.getFieldAs("predict6"), 1.0e-8);
+        Assert.assertEquals(0.0, row.getFieldAs("predict6"), EPS);
     }
 
     @Test
@@ -438,7 +429,7 @@ public class FmClassifierTest {
         Assert.assertEquals(
                 new DenseVector(new double[] {0.5526637687877789, 0.4473362312122211}),
                 row.getFieldAs("raw"));
-        Assert.assertEquals(0.0, row.getFieldAs("predict"), 1.0e-8);
+        Assert.assertEquals(0.0, row.getFieldAs("predict"), EPS);
     }
 
     @Test
@@ -466,29 +457,30 @@ public class FmClassifierTest {
                     assertArrayEquals(
                             new float[] {-0.07857955f, -0.07887801f, -0.07766823f, -0.07944956f},
                             t2.f1,
-                            1.0e-7f);
+                            (float) EPS);
                 } else if (t2.f0 == 1L) {
                     assertArrayEquals(
                             new float[] {0.073209815f, 0.07444382f, 0.07181655f, 0.08008082f},
                             t2.f1,
-                            1.0e-7f);
+                            (float) EPS);
                 } else if (t2.f0 == 2L) {
                     assertArrayEquals(
                             new float[] {0.07719299f, 0.0767468f, 0.07575097f, 0.08091559f},
                             t2.f1,
-                            1.0e-7f);
+                            (float) EPS);
                 } else if (t2.f0 == 3L) {
                     assertArrayEquals(
                             new float[] {0.06985869f, 0.0714843f, 0.0690421f, 0.08054871f},
                             t2.f1,
-                            1.0e-7f);
+                            (float) EPS);
                 } else if (t2.f0 == 4L) {
                     assertArrayEquals(
                             new float[] {0.07603331f, 0.0756547f, 0.07130743f, 0.08055682f},
                             t2.f1,
-                            1.0e-7f);
+                            (float) EPS);
                 } else if (t2.f0 == -1L) {
-                    assertArrayEquals(new float[] {-0.07710119f, 0.0f, 0.0f, 0.0f}, t2.f1, 1.0e-7f);
+                    assertArrayEquals(
+                            new float[] {-0.07710119f, 0.0f, 0.0f, 0.0f}, t2.f1, (float) EPS);
                 }
             }
         }
@@ -519,7 +511,7 @@ public class FmClassifierTest {
         Assert.assertEquals(
                 new DenseVector(new double[] {0.9043207519264417, 0.09567924807355836}),
                 row.getFieldAs("raw"));
-        Assert.assertEquals(0.0, row.getFieldAs("predict"), 1.0e-8);
+        Assert.assertEquals(0.0, row.getFieldAs("predict"), EPS);
     }
 
     @Test
@@ -552,12 +544,12 @@ public class FmClassifierTest {
         Assert.assertEquals(
                 new DenseVector(new double[] {0.9043207519264417, 0.09567924807355836}),
                 row.get(4));
-        Assert.assertEquals(0.0, (double) row.get(3), 1.0e-8);
+        Assert.assertEquals(0.0, (double) row.get(3), EPS);
     }
 
     @Test
     public void testServableLoadFunction() throws Exception {
-        env.setParallelism(1);
+        env.setParallelism(2);
         FmClassifier fmClassifier =
                 new FmClassifier()
                         .setWeightCol("weight")
@@ -583,145 +575,6 @@ public class FmClassifierTest {
         Assert.assertEquals(
                 new DenseVector(new double[] {0.9043207519264417, 0.09567924807355836}),
                 row.get(4));
-        Assert.assertEquals(0.0, (double) row.get(3), 1.0e-8);
-    }
-
-    public Table getAdultTable() {
-        String path = "/Users/weibo/workspace/data/flink_ml_fm_test_data/adult";
-        StreamExecutionEnvironment env = TableUtils.getExecutionEnvironment(tEnv);
-        Source<String, ?, ?> source =
-                FileSource.forRecordStreamFormat(
-                                new TextLineInputFormat(), FileUtils.getDataPath(path))
-                        .build();
-        DataStream<Row> ds =
-                env.fromSource(source, WatermarkStrategy.noWatermarks(), "movlelens")
-                        .map(
-                                new MapFunction<String, Row>() {
-                                    @Override
-                                    public Row map(String s) throws Exception {
-                                        String[] contents = s.split(",");
-                                        double label = Double.parseDouble(contents[0]);
-                                        String[] kvs = contents[1].substring(5).split(" ");
-                                        double[] values = new double[kvs.length];
-                                        int[] key = new int[kvs.length];
-                                        int iter = 0;
-                                        for (String e : kvs) {
-                                            String[] kv = e.split(":");
-                                            key[iter] = Integer.parseInt(kv[0]);
-                                            if (iter == 0) {
-                                                values[iter++] = Double.parseDouble(kv[1]);
-                                            } else {
-                                                values[iter++] = Double.parseDouble(kv[1]);
-                                            }
-                                        }
-
-                                        return Row.of(
-                                                new SparseVector(107, key, values), label, 1.0);
-                                    }
-                                })
-                        .returns(
-                                new RowTypeInfo(
-                                        new TypeInformation[] {
-                                            SparseVectorTypeInfo.INSTANCE,
-                                            Types.DOUBLE,
-                                            Types.DOUBLE
-                                        },
-                                        new String[] {"features", "label", "weight"}));
-        return tEnv.fromDataStream(ds);
-    }
-
-    public Table getTable(String name) {
-        String path = "/Users/weibo/workspace/data/flink_ml_fm_test_data/" + name;
-        StreamExecutionEnvironment env = TableUtils.getExecutionEnvironment(tEnv);
-        Source<String, ?, ?> source =
-                FileSource.forRecordStreamFormat(
-                                new TextLineInputFormat(), FileUtils.getDataPath(path))
-                        .build();
-        DataStream<Row> ds =
-                env.fromSource(source, WatermarkStrategy.noWatermarks(), "movlelens")
-                        .map(
-                                new RichMapFunction<String, Row>() {
-                                    private int max = 0;
-
-                                    @Override
-                                    public Row map(String s) throws Exception {
-                                        String[] contents = s.split("&");
-                                        double label = Integer.parseInt(contents[0]);
-                                        String[] kvs = contents[1].split(",");
-                                        double[] values = new double[kvs.length];
-                                        int[] key = new int[kvs.length];
-                                        int iter = 0;
-                                        for (String e : kvs) {
-                                            String[] kv = e.split(":");
-                                            key[iter] = Integer.parseInt(kv[0]);
-                                            max = Math.max(max, key[iter]);
-                                            values[iter++] = Double.parseDouble(kv[1]);
-                                        }
-
-                                        return Row.of(
-                                                new SparseVector(1000000, key, values), label, 1.0);
-                                    }
-
-                                    @Override
-                                    public void close() {
-                                        System.out.println(max);
-                                    }
-                                })
-                        .returns(
-                                new RowTypeInfo(
-                                        new TypeInformation[] {
-                                            SparseVectorTypeInfo.INSTANCE,
-                                            Types.DOUBLE,
-                                            Types.DOUBLE
-                                        },
-                                        new String[] {"features", "label", "weight"}));
-        return tEnv.fromDataStream(ds);
-    }
-
-    @Test
-    public void testAdult() {
-        env.setParallelism(2);
-        for (int i = 1; i < 2; ++i) {
-            FmClassifier fmClassifier =
-                    new FmClassifier()
-                            .setWeightCol("weight")
-                            .setDim("1,1,10")
-                            .setFeaturesCol("features")
-                            .setLabelCol("label")
-                            .setInitStdEv(0.001)
-                            .setLearnRate(0.00001)
-                            .setGamma(0.7)
-                            .setGlobalBatchSize(100000)
-                            .setMaxIter(i * 5)
-                            .setBeta2(0.5)
-                            .setBeta1(0.5)
-                            .setAlpha(0.01)
-                            .setBeta(0.02)
-                            .setL1(0.01)
-                            .setL2(0.01)
-                            .setMethod("ADADELTA_AVG")
-                            .setRawPredictionCol("raw")
-                            .setLambda("0.1, 0.1, 0.1");
-            Table adult = getAdultTable();
-            Table zxzl = getTable("train");
-            FmClassifierModel model = fmClassifier.fit(adult);
-
-            Table result = model.transform(adult)[0];
-
-            BinaryClassificationEvaluator eval =
-                    new BinaryClassificationEvaluator()
-                            .setLabelCol("label")
-                            .setRawPredictionCol("raw")
-                            .setMetricsNames(
-                                    BinaryClassificationEvaluatorParams.AREA_UNDER_PR,
-                                    BinaryClassificationEvaluatorParams.KS,
-                                    BinaryClassificationEvaluatorParams.AREA_UNDER_ROC);
-            Table evalResult = eval.transform(result)[0];
-
-            List<Row> results = IteratorUtils.toList(evalResult.execute().collect());
-            for (Row row : results) {
-                System.out.println(row);
-            }
-        }
+        Assert.assertEquals(0.0, (double) row.get(3), EPS);
     }
 }

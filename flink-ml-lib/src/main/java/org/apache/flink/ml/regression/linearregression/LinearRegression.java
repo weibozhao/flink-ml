@@ -18,22 +18,23 @@
 
 package org.apache.flink.ml.regression.linearregression;
 
+import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.ml.api.Estimator;
-import org.apache.flink.ml.common.datastream.DataStreamUtils;
+import org.apache.flink.ml.classification.linearsvc.LinearSVC.ParseSample;
 import org.apache.flink.ml.common.feature.LabeledPointWithWeight;
 import org.apache.flink.ml.common.lossfunc.LeastSquareLoss;
-import org.apache.flink.ml.common.optimizer.Optimizer;
-import org.apache.flink.ml.common.optimizer.SGD;
+import org.apache.flink.ml.common.ps.api.AlgorithmFlow;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
+import org.apache.flink.ml.common.ps.api.OptimizerComponent;
+import org.apache.flink.ml.common.ps.api.OptimizerComponent.Method;
 import org.apache.flink.ml.linalg.DenseVector;
-import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
@@ -59,53 +60,49 @@ public class LinearRegression
     @SuppressWarnings({"rawTypes", "ConstantConditions"})
     public LinearRegressionModel fit(Table... inputs) {
         Preconditions.checkArgument(inputs.length == 1);
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
-        DataStream<LabeledPointWithWeight> trainData =
-                tEnv.toDataStream(inputs[0])
-                        .map(
-                                dataPoint -> {
-                                    double weight =
-                                            getWeightCol() == null
-                                                    ? 1.0
-                                                    : ((Number) dataPoint.getField(getWeightCol()))
-                                                            .doubleValue();
-                                    double label =
-                                            ((Number) dataPoint.getField(getLabelCol()))
-                                                    .doubleValue();
-                                    DenseVector features =
-                                            ((Vector) dataPoint.getField(getFeaturesCol()))
-                                                    .toDense();
-                                    return new LabeledPointWithWeight(features, label, weight);
-                                });
 
-        DataStream<DenseVector> initModelData =
-                DataStreamUtils.reduce(
-                                trainData.map(x -> x.getFeatures().size()),
+        String dataName = "data";
+        String modelName = "modelName";
+        MLData mlData = MLData.of(inputs, new String[] {dataName});
+        AlgorithmFlow algoFlow = new AlgorithmFlow();
+
+        algoFlow.add(
+                        new MLDataFunction(
+                                "map",
+                                new ParseSample(getLabelCol(), getWeightCol(), getFeaturesCol())))
+                .add(
+                        new MLDataFunction(
+                                        "map",
+                                        (MapFunction<LabeledPointWithWeight, Integer>)
+                                                (x -> x.getFeatures().size()))
+                                .output(modelName))
+                .add(
+                        new MLDataFunction(
+                                "reduce",
                                 (ReduceFunction<Integer>)
                                         (t0, t1) -> {
                                             Preconditions.checkState(
                                                     t0.equals(t1),
                                                     "The training data should all have same dimensions.");
                                             return t0;
-                                        })
-                        .map(DenseVector::new);
+                                        }))
+                .add(
+                        new MLDataFunction(
+                                "map", (MapFunction<Integer, DenseVector>) (DenseVector::new)))
+                .add(
+                        new OptimizerComponent(paramMap, Method.SGD, LeastSquareLoss.INSTANCE)
+                                .withInitModel(modelName)
+                                .input(dataName)
+                                .output(modelName))
+                .add(
+                        new MLDataFunction(
+                                "map",
+                                (MapFunction<DenseVector, LinearRegressionModelData>)
+                                        (LinearRegressionModelData::new)));
 
-        Optimizer optimizer =
-                new SGD(
-                        getMaxIter(),
-                        getLearningRate(),
-                        getGlobalBatchSize(),
-                        getTol(),
-                        getReg(),
-                        getElasticNet());
-        DataStream<DenseVector> rawModelData =
-                optimizer.optimize(initModelData, trainData, LeastSquareLoss.INSTANCE);
-
-        DataStream<LinearRegressionModelData> modelData =
-                rawModelData.map(LinearRegressionModelData::new);
         LinearRegressionModel model =
-                new LinearRegressionModel().setModelData(tEnv.fromDataStream(modelData));
+                new LinearRegressionModel()
+                        .setModelData(algoFlow.apply(mlData).getTable(modelName));
         ParamUtils.updateExistingParams(model, paramMap);
         return model;
     }

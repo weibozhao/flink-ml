@@ -81,7 +81,10 @@ class Preprocess {
     static Tuple2<Table, DataStream<FeatureMeta>> preprocessCols(
             Table dataTable, BoostingStrategy strategy) {
 
-        final String[] relatedCols = ArrayUtils.add(strategy.featuresCols, strategy.labelCol);
+        String[] relatedCols = ArrayUtils.add(strategy.featuresCols, strategy.labelCol);
+        if (null != strategy.weightCol) {
+            relatedCols = ArrayUtils.add(relatedCols, strategy.weightCol);
+        }
         dataTable =
                 dataTable.select(
                         Arrays.stream(relatedCols)
@@ -150,7 +153,13 @@ class Preprocess {
      */
     static Tuple2<Table, DataStream<FeatureMeta>> preprocessVecCol(
             Table dataTable, BoostingStrategy strategy) {
-        dataTable = dataTable.select($(strategy.featuresCols[0]), $(strategy.labelCol));
+        dataTable =
+                null == strategy.weightCol
+                        ? dataTable.select($(strategy.featuresCols[0]), $(strategy.labelCol))
+                        : dataTable.select(
+                                $(strategy.featuresCols[0]),
+                                $(strategy.labelCol),
+                                $(strategy.weightCol));
         Tuple2<Table, DataStream<double[][]>> mappedDataAndBinEdges =
                 discretizeVectorCol(
                         dataTable, strategy.featuresCols[0], strategy.maxBins, strategy.seed);

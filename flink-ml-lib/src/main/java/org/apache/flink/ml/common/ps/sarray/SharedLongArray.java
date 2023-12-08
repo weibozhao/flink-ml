@@ -20,10 +20,8 @@ package org.apache.flink.ml.common.ps.sarray;
 
 import it.unimi.dsi.fastutil.longs.LongArrayList;
 
-import java.io.Serializable;
-
 /** A resizable long array that can be shared among different iterations for memory efficiency. */
-public class SharedLongArray implements Serializable {
+public class SharedLongArray implements SharedNumericalArray {
 
     /** The underlying LongArrayList that holds the elements. */
     private final LongArrayList longs;

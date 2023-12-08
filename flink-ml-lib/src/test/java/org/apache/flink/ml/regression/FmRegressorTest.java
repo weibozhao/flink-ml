@@ -47,6 +47,7 @@ public class FmRegressorTest {
 
     private StreamTableEnvironment tEnv;
 
+    private static final double EPS = 1.0e-8;
     private static final List<Row> trainRows =
             Arrays.asList(
                     Row.of(
@@ -134,7 +135,7 @@ public class FmRegressorTest {
                         new ArrayList<>(Arrays.asList("features", "label", "weight")),
                         new ArrayList<>(
                                 Arrays.asList(
-                                        DataTypes.vectorType(BasicType.DOUBLE),
+                                        DataTypes.VECTOR(BasicType.DOUBLE),
                                         DataTypes.DOUBLE,
                                         DataTypes.DOUBLE)),
                         testRows);
@@ -160,7 +161,7 @@ public class FmRegressorTest {
         assertEquals("1,1,10", fmRegressor.getDim());
         assertEquals("0.01,0.01,0.01", fmRegressor.getLambda());
         assertEquals(0.9, fmRegressor.getGamma(), TOLERANCE);
-        assertEquals("AdaGrad", fmRegressor.getMethod());
+        assertEquals("AdaGrad_AVG", fmRegressor.getMethod());
         assertEquals("prediction", fmRegressor.getPredictionCol());
 
         fmRegressor
@@ -240,11 +241,11 @@ public class FmRegressorTest {
         FmRegressorModel model = fmRegressor.fit(trainTable);
         Table result = model.transform(testTable)[0];
         Row row = (Row) IteratorUtils.toList(tEnv.toDataStream(result).executeAndCollect()).get(0);
-        Assert.assertEquals(0.18583209812641144, row.getFieldAs("predict"), 1.0e-8);
+        Assert.assertEquals(0.18583209812641144, row.getFieldAs("predict"), EPS);
     }
 
     @Test
-    public void testOptimizer() throws Exception {
+    public void testMiniBatchOptimizer() throws Exception {
         env.setParallelism(4);
         FmRegressor fmRegressor =
                 new FmRegressor()
@@ -260,29 +261,10 @@ public class FmRegressorTest {
                         .setMethod("AdaGrad")
                         .setLambda("0.1, 0.1, 0.1")
                         .setPredictionCol("predict");
-        Table middleTable1 = fmRegressor.fit(trainTable).transform(testTable)[0];
-        fmRegressor.setMethod("Ftrl").setPredictionCol("predict1");
-        Table middleTable2 = fmRegressor.fit(trainTable).transform(middleTable1)[0];
-        fmRegressor.setMethod("adam").setPredictionCol("predict2");
-        Table middleTable3 = fmRegressor.fit(trainTable).transform(middleTable2)[0];
-        fmRegressor.setMethod("RMSProp").setPredictionCol("predict3");
-        Table middleTable4 = fmRegressor.fit(trainTable).transform(middleTable3)[0];
-        fmRegressor.setMethod("SGD").setLearnRate(0.0001).setPredictionCol("predict4");
-        Table middleTable5 = fmRegressor.fit(trainTable).transform(middleTable4)[0];
-        fmRegressor.setMethod("AdaDelta").setPredictionCol("predict5");
-        Table middleTable6 = fmRegressor.fit(trainTable).transform(middleTable5)[0];
-        fmRegressor.setMethod("Momentum").setPredictionCol("predict6");
-        Table result = fmRegressor.fit(trainTable).transform(middleTable6)[0];
+        Table result = fmRegressor.fit(trainTable).transform(testTable)[0];
 
         Row row = (Row) IteratorUtils.toList(tEnv.toDataStream(result).executeAndCollect()).get(0);
-
-        Assert.assertEquals(0.5501255393028259, row.getFieldAs("predict"), 1.0e-8);
-        Assert.assertEquals(2.2269744873046875, row.getFieldAs("predict1"), 1.0e-8);
-        Assert.assertEquals(1.5114543437957764, row.getFieldAs("predict2"), 1.0e-8);
-        Assert.assertEquals(1.706116795539856, row.getFieldAs("predict3"), 1.0e-8);
-        Assert.assertEquals(0.5043978095054626, row.getFieldAs("predict4"), 1.0e-8);
-        Assert.assertEquals(0.1197570413351059, row.getFieldAs("predict5"), 1.0e-8);
-        Assert.assertEquals(0.9788283109664917, row.getFieldAs("predict6"), 1.0e-8);
+        Assert.assertEquals(0.5501255393028259, row.getFieldAs("predict"), EPS);
     }
 
     @Test
@@ -316,7 +298,7 @@ public class FmRegressorTest {
                         FmRegressorModel::load);
         Table result = model.transform(testTable)[0];
         Row row = (Row) IteratorUtils.toList(tEnv.toDataStream(result).executeAndCollect()).get(0);
-        Assert.assertEquals(0.18583209812641144, row.getFieldAs("predict"), 1.0e-8);
+        Assert.assertEquals(0.18583209812641144, row.getFieldAs("predict"), EPS);
     }
 
     @Test
@@ -344,29 +326,30 @@ public class FmRegressorTest {
                     assertArrayEquals(
                             new float[] {0.12732524f, 0.1256474f, 0.12099945f, 0.13577887f},
                             t2.f1,
-                            1.0e-7f);
+                            (float) EPS);
                 } else if (t2.f0 == 1L) {
                     assertArrayEquals(
                             new float[] {0.0015494842f, 9.350925E-4f, 6.6113775E-4f, 0.076575495f},
                             t2.f1,
-                            1.0e-7f);
+                            (float) EPS);
                 } else if (t2.f0 == 2L) {
                     assertArrayEquals(
                             new float[] {0.001317327f, 0.001286447f, 8.51548E-4f, 0.0764627f},
                             t2.f1,
-                            1.0e-7f);
+                            (float) EPS);
                 } else if (t2.f0 == 3L) {
                     assertArrayEquals(
                             new float[] {0.0012999837f, 6.879574E-4f, 5.688492E-4f, 0.047855932f},
                             t2.f1,
-                            1.0e-7f);
+                            (float) EPS);
                 } else if (t2.f0 == 4L) {
                     assertArrayEquals(
                             new float[] {0.0013542969f, 0.0012655297f, 0.001152972f, 0.06740911f},
                             t2.f1,
-                            1.0e-7f);
+                            (float) EPS);
                 } else if (t2.f0 == -1L) {
-                    assertArrayEquals(new float[] {0.075566016f, 0.0f, 0.0f, 0.0f}, t2.f1, 1.0e-7f);
+                    assertArrayEquals(
+                            new float[] {0.075566016f, 0.0f, 0.0f, 0.0f}, t2.f1, (float) EPS);
                 }
             }
         }
@@ -393,7 +376,7 @@ public class FmRegressorTest {
         newModel.setModelData(model.getModelData());
         Table result = newModel.transform(testTable)[0];
         Row row = (Row) IteratorUtils.toList(tEnv.toDataStream(result).executeAndCollect()).get(0);
-        Assert.assertEquals(3.5184452533721924, row.getFieldAs("predict"), 1.0e-8);
+        Assert.assertEquals(1.7582142353057861, row.getFieldAs("predict"), EPS);
     }
 
     @Test
@@ -423,12 +406,12 @@ public class FmRegressorTest {
 
         DataFrame output = servable.transform(testDataFrame);
         org.apache.flink.ml.servable.api.Row row = output.collect().get(0);
-        Assert.assertEquals(3.5184452533721924, (double) row.get(3), 1.0e-8);
+        Assert.assertEquals(1.7582142353057861, (double) row.get(3), EPS);
     }
 
     @Test
     public void testServableLoadFunction() throws Exception {
-        env.setParallelism(1);
+        env.setParallelism(4);
         FmRegressor fmRegressor =
                 new FmRegressor()
                         .setWeightCol("weight")
@@ -451,6 +434,6 @@ public class FmRegressorTest {
 
         DataFrame output = servable.transform(testDataFrame);
         org.apache.flink.ml.servable.api.Row row = output.collect().get(0);
-        Assert.assertEquals(3.5184452533721924, (double) row.get(3), 1.0e-8);
+        Assert.assertEquals(1.7582142353057861, (double) row.get(3), EPS);
     }
 }

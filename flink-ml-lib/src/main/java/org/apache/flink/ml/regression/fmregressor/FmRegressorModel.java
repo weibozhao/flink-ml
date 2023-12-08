@@ -23,27 +23,27 @@ import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.ml.api.Model;
-import org.apache.flink.ml.common.broadcast.BroadcastUtils;
 import org.apache.flink.ml.common.datastream.TableUtils;
 import org.apache.flink.ml.common.fm.FmModelData;
 import org.apache.flink.ml.common.fm.FmModelDataUtil;
 import org.apache.flink.ml.common.fm.FmModelServable;
+import org.apache.flink.ml.common.ps.api.AlgorithmFlow;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
+import org.apache.flink.ml.common.ps.api.ModelParseComponent;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.commons.lang3.ArrayUtils;
 
 import java.io.IOException;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -54,57 +54,58 @@ public class FmRegressorModel
 
     private final Map<Param<?>, Object> paramMap = new HashMap<>();
 
-    private Table modelDataTable;
+    private Table modelData;
 
     public FmRegressorModel() {
         ParamUtils.initializeMapWithDefaultValues(paramMap, this);
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public Table[] transform(Table... inputs) {
         Preconditions.checkArgument(inputs.length == 1);
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
-        DataStream<Row> inputStream = tEnv.toDataStream(inputs[0]);
-        final String broadcastModelKey = "broadcastModelKey";
-        DataStream<FmModelData> modelDataStream =
-                FmModelDataUtil.getModelDataStream(modelDataTable);
+        final String broadcastModelKey = "model";
         RowTypeInfo inputTypeInfo = TableUtils.getRowTypeInfo(inputs[0].getResolvedSchema());
         RowTypeInfo outputTypeInfo =
                 new RowTypeInfo(
                         ArrayUtils.addAll(
                                 inputTypeInfo.getFieldTypes(), BasicTypeInfo.DOUBLE_TYPE_INFO),
                         ArrayUtils.addAll(inputTypeInfo.getFieldNames(), getPredictionCol()));
-        DataStream<Row> predictionResult =
-                BroadcastUtils.withBroadcastStream(
-                        Collections.singletonList(inputStream),
-                        Collections.singletonMap(broadcastModelKey, modelDataStream),
-                        inputList -> {
-                            DataStream<Row> inputData = (DataStream<Row>) inputList.get(0);
-                            return inputData.map(
-                                    new PredictLabelFunction(broadcastModelKey, paramMap),
-                                    outputTypeInfo);
-                        });
-        return new Table[] {tEnv.fromDataStream(predictionResult)};
+
+        MLData predictionResult =
+                new AlgorithmFlow()
+                        .add(new ModelParseComponent<>("model", FmModelData.class))
+                        .add(
+                                new MLDataFunction(
+                                                "map",
+                                                new PredictLabelFunction(
+                                                        broadcastModelKey, paramMap))
+                                        .withBroadcast("model")
+                                        .returns(outputTypeInfo))
+                        .apply(
+                                MLData.of(
+                                        new Table[] {inputs[0], modelData},
+                                        new String[] {"data", "model"}))
+                        .slice("data");
+
+        return predictionResult.getTables();
     }
 
     @Override
     public FmRegressorModel setModelData(Table... inputs) {
-        modelDataTable = inputs[0];
+        modelData = inputs[0];
         return this;
     }
 
     @Override
     public Table[] getModelData() {
-        return new Table[] {modelDataTable};
+        return new Table[] {modelData};
     }
 
     @Override
     public void save(String path) throws IOException {
         ReadWriteUtils.saveMetadata(this, path);
         ReadWriteUtils.saveModelData(
-                FmModelDataUtil.getModelDataStream(modelDataTable),
+                FmModelDataUtil.getModelDataStream(modelData),
                 path,
                 new FmModelDataUtil.ModelDataEncoder());
     }

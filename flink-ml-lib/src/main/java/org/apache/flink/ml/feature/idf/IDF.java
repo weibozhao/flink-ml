@@ -22,20 +22,17 @@ import org.apache.flink.api.common.functions.AggregateFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.ml.api.Estimator;
-import org.apache.flink.ml.common.datastream.DataStreamUtils;
+import org.apache.flink.ml.common.ps.api.MLData;
 import org.apache.flink.ml.linalg.BLAS;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.linalg.Vectors;
-import org.apache.flink.ml.linalg.typeinfo.VectorTypeInfo;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Preconditions;
 
@@ -63,21 +60,12 @@ public class IDF implements Estimator<IDF, IDFModel>, IDFParams<IDF> {
     @Override
     public IDFModel fit(Table... inputs) {
         Preconditions.checkArgument(inputs.length == 1);
-        final String inputCol = getInputCol();
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
+        MLData mlData = MLData.of(inputs);
 
-        DataStream<Vector> inputData =
-                tEnv.toDataStream(inputs[0])
-                        .map(
-                                (MapFunction<Row, Vector>)
-                                        value -> ((Vector) value.getField(inputCol)),
-                                VectorTypeInfo.INSTANCE);
+        mlData.map((MapFunction<Row, Vector>) x -> x.getFieldAs(getInputCol()));
+        mlData.aggregate(new IDFAggregator(getMinDocFreq()));
 
-        DataStream<IDFModelData> modelData =
-                DataStreamUtils.aggregate(inputData, new IDFAggregator(getMinDocFreq()));
-
-        IDFModel model = new IDFModel().setModelData(tEnv.fromDataStream(modelData));
+        IDFModel model = new IDFModel().setModelData(mlData.getTable());
         ParamUtils.updateExistingParams(model, getParamMap());
         return model;
     }

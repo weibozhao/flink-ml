@@ -37,18 +37,18 @@ import java.util.List;
 import java.util.Random;
 
 /** Als model updater supports the API for updating model and getting model. */
-public class AlsModelUpdater implements ModelUpdater<Tuple2<Long, double[]>> {
+public class AlsModelUpdater implements ModelUpdater<float[]> {
     private final int rank;
     private final Random random = new Random();
-    Long2ObjectOpenHashMap<double[]> model;
-    private ListState<Long2ObjectOpenHashMap<double[]>> modelDataState;
+    Long2ObjectOpenHashMap<float[]> model;
+    private ListState<Long2ObjectOpenHashMap<float[]>> modelDataState;
 
     public AlsModelUpdater(int rank) {
         this.rank = rank;
     }
 
     @Override
-    public void update(long[] keys, double[] values) {
+    public void update(long[] keys, float[] values) {
         int offset = rank * (rank + 1);
         for (int i = 0; i < keys.length; ++i) {
             if (keys[i] >= 0) {
@@ -64,15 +64,15 @@ public class AlsModelUpdater implements ModelUpdater<Tuple2<Long, double[]>> {
     }
 
     @Override
-    public double[] get(long[] keys) {
+    public float[] get(long[] keys) {
         if (keys[0] >= 0) {
-            double[] values = new double[keys.length * rank];
+            float[] values = new float[keys.length * rank];
             for (int i = 0; i < keys.length; i++) {
                 if (!model.containsKey(keys[i])) {
-                    double[] factor = new double[rank];
+                    float[] factor = new float[rank];
                     random.setSeed(keys[i]);
                     for (int j = 0; j < rank; ++j) {
-                        factor[j] = random.nextDouble();
+                        factor[j] = (float) random.nextDouble();
                     }
                     model.put(keys[i], factor);
                 }
@@ -80,12 +80,12 @@ public class AlsModelUpdater implements ModelUpdater<Tuple2<Long, double[]>> {
             }
             return values;
         } else if (keys[0] == Long.MIN_VALUE) {
-            return new double[rank];
+            return new float[rank];
         } else if (keys[0] == Long.MIN_VALUE + 1) {
-            return new double[rank * rank + rank];
+            return new float[rank * rank + rank];
         } else {
             int offset = rank * (rank + 1);
-            double[] values = new double[keys.length * offset];
+            float[] values = new float[keys.length * offset];
             for (int i = 0; i < keys.length; i++) {
                 if (keys[i] == Long.MIN_VALUE) {
                     continue;
@@ -98,8 +98,8 @@ public class AlsModelUpdater implements ModelUpdater<Tuple2<Long, double[]>> {
     }
 
     @Override
-    public Iterator<Tuple2<Long, double[]>> getModelSegments() {
-        List<Tuple2<Long, double[]>> modelSegments = new ArrayList<>(model.size());
+    public Iterator<Object> getModelSegments() {
+        List<Object> modelSegments = new ArrayList<>(model.size());
         for (Long key : model.keySet()) {
             if (key >= 0L) {
                 modelSegments.add(Tuple2.of(key, model.get(key)));
@@ -117,7 +117,7 @@ public class AlsModelUpdater implements ModelUpdater<Tuple2<Long, double[]>> {
                                         "modelDataState",
                                         new Long2ObjectOpenHashMapTypeInfo<>(
                                                 PrimitiveArrayTypeInfo
-                                                        .DOUBLE_PRIMITIVE_ARRAY_TYPE_INFO)));
+                                                        .FLOAT_PRIMITIVE_ARRAY_TYPE_INFO)));
         model =
                 OperatorStateUtils.getUniqueElement(modelDataState, "modelDataState")
                         .orElse(new Long2ObjectOpenHashMap<>());

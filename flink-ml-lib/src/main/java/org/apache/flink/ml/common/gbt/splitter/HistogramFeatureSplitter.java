@@ -42,10 +42,10 @@ public abstract class HistogramFeatureSplitter extends FeatureSplitter {
     }
 
     protected boolean isSplitIllegal(Impurity total, Impurity left, Impurity right) {
-        return (minSamplesPerLeaf > left.getTotalWeights()
-                        || minSamplesPerLeaf > right.getTotalWeights())
-                || minSampleRatioPerChild > 1. * left.getNumInstances() / total.getNumInstances()
-                || minSampleRatioPerChild > 1. * right.getNumInstances() / total.getNumInstances();
+        return (minInstancesPerNode > left.getNumInstances()
+                        || minInstancesPerNode > right.getNumInstances())
+                || minWeightFractionPerNode > left.getTotalWeights() / total.getTotalWeights()
+                || minWeightFractionPerNode > right.getTotalWeights() / total.getTotalWeights();
     }
 
     protected double gain(Impurity total, Impurity left, Impurity right) {

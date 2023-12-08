@@ -21,7 +21,6 @@ package org.apache.flink.ml.common.ps.utils;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.Partitioner;
 import org.apache.flink.api.common.typeinfo.PrimitiveArrayTypeInfo;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.iteration.DataStreamList;
 import org.apache.flink.iteration.IterationBody;
@@ -33,7 +32,7 @@ import org.apache.flink.ml.common.feature.LabeledPointWithWeight;
 import org.apache.flink.ml.common.ps.Message;
 import org.apache.flink.ml.common.ps.ServerOperator;
 import org.apache.flink.ml.common.ps.WorkerOperator;
-import org.apache.flink.ml.common.ps.iterations.IterationStageList;
+import org.apache.flink.ml.common.ps.api.ServerIteration;
 import org.apache.flink.ml.common.ps.iterations.MLSession;
 import org.apache.flink.ml.common.ps.updater.ModelUpdater;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -46,26 +45,23 @@ import java.util.List;
 /** Utility function to describe iterative training process. */
 public final class TrainingUtils {
     /**
-     * Executes the iterative machine learning logic described in {@link IterationStageList} and
+     * Executes the iterative machine learning logic described in {@link ServerIteration} and
      * returns the fitted model data as well as the outputs from worker operator. The outputs from
      * worker operator are specified via {@link MLSession#getOutputTags()}.
      *
      * @param inputData the input data.
      * @param iterationStages the iterative processing logic.
-     * @param modelDataType output type information of model data.
      * @param modelUpdater the logic to update model on servers.
      * @param numServers number of servers.
      * @return the fitted model data as well as the outputs from worker operator. The orders are
      *     {modelData, sideOutputs from workers}. Note that the outputs from workers shares the same
      *     order with the {@link MLSession#getOutputTags()}.
      * @param <DT> type information of input data.
-     * @param <MT> type information of the output model data.
      */
-    public static <DT, MT> DataStreamList train(
+    public static <DT> DataStreamList train(
             DataStream<DT> inputData,
-            IterationStageList<? extends MLSession> iterationStages,
-            TypeInformation<MT> modelDataType,
-            ModelUpdater<MT> modelUpdater,
+            ServerIteration<? extends MLSession> iterationStages,
+            ModelUpdater modelUpdater,
             int numServers) {
         DataStream<byte[]> variableStream =
                 inputData.getExecutionEnvironment().fromElements(new byte[0]).filter(x -> false);
@@ -74,34 +70,30 @@ public final class TrainingUtils {
                 DataStreamList.of(variableStream),
                 ReplayableDataStreamList.notReplay(inputData),
                 IterationConfig.newBuilder().build(),
-                new TrainIterationBody<>(modelUpdater, modelDataType, iterationStages, numServers));
+                new TrainIterationBody(modelUpdater, iterationStages, numServers));
     }
 
     /** The iteration implementation for training process. */
-    private static class TrainIterationBody<MT> implements IterationBody {
-        private final ModelUpdater<MT> modelUpdater;
-        private final TypeInformation<MT> modelType;
-        private final IterationStageList<? extends MLSession> iterationStages;
+    private static class TrainIterationBody implements IterationBody {
+        private final ModelUpdater modelUpdater;
+        private final ServerIteration<? extends MLSession> iterationStages;
         private final int numServers;
 
         public TrainIterationBody(
-                ModelUpdater<MT> modelUpdater,
-                TypeInformation<MT> modelType,
-                IterationStageList<? extends MLSession> iterationStages,
+                ModelUpdater modelUpdater,
+                ServerIteration<? extends MLSession> iterationStages,
                 int numServers) {
             this.iterationStages = iterationStages;
-            this.modelType = modelType;
             this.modelUpdater = modelUpdater;
             this.numServers = numServers;
         }
 
         @Override
-        @SuppressWarnings("unchecked")
         public IterationBodyResult process(
                 DataStreamList variableStreams, DataStreamList dataStreams) {
             DataStream<byte[]> variableStream = variableStreams.get(0);
             DataStream<LabeledPointWithWeight> trainData = dataStreams.get(0);
-            final OutputTag<MT> modelDataOutputTag = new OutputTag<>("MODEL_OUTPUT", modelType);
+            final OutputTag<Object> modelDataOutputTag = new OutputTag<>("MODEL_OUTPUT");
 
             SingleOutputStreamOperator<byte[]> messageToServer =
                     trainData
@@ -109,7 +101,7 @@ public final class TrainingUtils {
                             .transform(
                                     "WorkerOp",
                                     PrimitiveArrayTypeInfo.BYTE_PRIMITIVE_ARRAY_TYPE_INFO,
-                                    new WorkerOperator(iterationStages, numServers));
+                                    new WorkerOperator<>(iterationStages, numServers));
             int numWorkers = messageToServer.getParallelism();
 
             SingleOutputStreamOperator<byte[]> messageToWorker =
@@ -122,8 +114,8 @@ public final class TrainingUtils {
                             .transform(
                                     "ServerOp",
                                     PrimitiveArrayTypeInfo.BYTE_PRIMITIVE_ARRAY_TYPE_INFO,
-                                    new ServerOperator<>(
-                                            iterationStages.stageList,
+                                    new ServerOperator(
+                                            iterationStages.iterationStageList,
                                             numWorkers,
                                             modelUpdater,
                                             modelDataOutputTag));
@@ -141,7 +133,7 @@ public final class TrainingUtils {
                                     PrimitiveArrayTypeInfo.BYTE_PRIMITIVE_ARRAY_TYPE_INFO)
                             .setParallelism(numWorkers);
 
-            DataStream<MT> model = messageToWorker.getSideOutput(modelDataOutputTag);
+            DataStream<Object> model = messageToWorker.getSideOutput(modelDataOutputTag);
 
             List<DataStream<?>> result = new ArrayList<>();
             result.add(model);

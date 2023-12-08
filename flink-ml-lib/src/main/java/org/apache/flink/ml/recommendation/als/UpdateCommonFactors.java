@@ -18,7 +18,7 @@
 
 package org.apache.flink.ml.recommendation.als;
 
-import org.apache.flink.ml.common.ps.iterations.ProcessStage;
+import org.apache.flink.ml.common.ps.iterations.ProcessComponent;
 import org.apache.flink.ml.linalg.BLAS;
 import org.apache.flink.ml.linalg.DenseMatrix;
 import org.apache.flink.ml.linalg.DenseVector;
@@ -29,7 +29,7 @@ import java.io.IOException;
 import java.util.Arrays;
 
 /** An iteration stage that uses the pulled model values and batch data to compute the factors. */
-public class UpdateCommonFactors extends ProcessStage<AlsMLSession> {
+public class UpdateCommonFactors extends ProcessComponent<AlsMLSession> {
     private final int rank;
     private final boolean implicit;
     private final boolean nonNegative;
@@ -96,8 +96,9 @@ public class UpdateCommonFactors extends ProcessStage<AlsMLSession> {
                 for (int i = 0; i < nb.length; i++) {
                     long index = nb[i];
                     int realIndex = session.reusedNeighborIndexMapping.get(index);
-                    System.arraycopy(
-                            session.pullValues.elements(), realIndex * rank, tmpVec, 0, rank);
+                    for (int j = 0; j < rank; ++j) {
+                        tmpVec[j] = session.pullValues.elements()[realIndex * rank + j];
+                    }
                     ls.add(new DenseVector(tmpVec), rating[i], 1.0);
                 }
                 ls.regularize(nb.length * lambda);
@@ -120,8 +121,9 @@ public class UpdateCommonFactors extends ProcessStage<AlsMLSession> {
                     }
 
                     int realIndex = session.reusedNeighborIndexMapping.get(index);
-                    System.arraycopy(
-                            session.pullValues.elements(), realIndex * rank, tmpVec, 0, rank);
+                    for (int j = 0; j < rank; ++j) {
+                        tmpVec[j] = session.pullValues.elements()[realIndex * rank + j];
+                    }
 
                     ls.add(new DenseVector(tmpVec), ((r > 0.0) ? (1.0 + c1) : 0.0), c1);
                 }
@@ -131,7 +133,9 @@ public class UpdateCommonFactors extends ProcessStage<AlsMLSession> {
                 ls.solve(x, nonNegative);
             }
             session.pushIndices.elements()[nonSplitId] = ele.nodeId;
-            System.arraycopy(x.values, 0, session.pushValues.elements(), nonSplitId * rank, rank);
+            for (int i = 0; i < rank; ++i) {
+                session.pushValues.elements()[nonSplitId * rank + i] = (float) x.values[i];
+            }
             nonSplitId++;
         }
     }

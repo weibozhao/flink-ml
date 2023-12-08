@@ -24,24 +24,23 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.ml.api.Model;
-import org.apache.flink.ml.common.broadcast.BroadcastUtils;
 import org.apache.flink.ml.common.datastream.TableUtils;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
+import org.apache.flink.ml.common.ps.api.ModelParseComponent;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.commons.lang3.ArrayUtils;
 
 import java.io.IOException;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -62,12 +61,10 @@ public class LogisticRegressionModel
     @SuppressWarnings("unchecked")
     public Table[] transform(Table... inputs) {
         Preconditions.checkArgument(inputs.length == 1);
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
-        DataStream<Row> inputStream = tEnv.toDataStream(inputs[0]);
-        final String broadcastModelKey = "broadcastModelKey";
-        DataStream<LogisticRegressionModelData> modelDataStream =
-                LogisticRegressionModelDataUtil.getModelDataStream(modelDataTable);
+
+        MLData mlData =
+                MLData.of(new Table[] {inputs[0], modelDataTable}, new String[] {"data", "model"});
+
         RowTypeInfo inputTypeInfo = TableUtils.getRowTypeInfo(inputs[0].getResolvedSchema());
         RowTypeInfo outputTypeInfo =
                 new RowTypeInfo(
@@ -79,17 +76,14 @@ public class LogisticRegressionModel
                                 inputTypeInfo.getFieldNames(),
                                 getPredictionCol(),
                                 getRawPredictionCol()));
-        DataStream<Row> predictionResult =
-                BroadcastUtils.withBroadcastStream(
-                        Collections.singletonList(inputStream),
-                        Collections.singletonMap(broadcastModelKey, modelDataStream),
-                        inputList -> {
-                            DataStream inputData = inputList.get(0);
-                            return inputData.map(
-                                    new PredictLabelFunction(broadcastModelKey, paramMap),
-                                    outputTypeInfo);
-                        });
-        return new Table[] {tEnv.fromDataStream(predictionResult)};
+
+        new ModelParseComponent<>("model", LogisticRegressionModelData.class).apply(mlData);
+        new MLDataFunction("map", new PredictFunction(paramMap, "model"))
+                .withBroadcast("model")
+                .returns(outputTypeInfo)
+                .apply(mlData);
+
+        return mlData.slice("data").getTables();
     }
 
     @Override
@@ -131,17 +125,15 @@ public class LogisticRegressionModel
     }
 
     /** A utility function used for prediction. */
-    private static class PredictLabelFunction extends RichMapFunction<Row, Row> {
-
-        private final String broadcastModelKey;
+    private static class PredictFunction extends RichMapFunction<Row, Row> {
 
         private final Map<Param<?>, Object> params;
-
+        private String broadcastName;
         private LogisticRegressionModelServable servable;
 
-        public PredictLabelFunction(String broadcastModelKey, Map<Param<?>, Object> params) {
-            this.broadcastModelKey = broadcastModelKey;
+        public PredictFunction(Map<Param<?>, Object> params, String broadcastName) {
             this.params = params;
+            this.broadcastName = broadcastName;
         }
 
         @Override
@@ -149,7 +141,7 @@ public class LogisticRegressionModel
             if (servable == null) {
                 LogisticRegressionModelData modelData =
                         (LogisticRegressionModelData)
-                                getRuntimeContext().getBroadcastVariable(broadcastModelKey).get(0);
+                                getRuntimeContext().getBroadcastVariable(broadcastName).get(0);
                 servable = new LogisticRegressionModelServable(modelData);
                 ParamUtils.updateExistingParams(servable, params);
             }

@@ -21,6 +21,7 @@ package org.apache.flink.ml.clustering.kmeans;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.MapPartitionFunction;
 import org.apache.flink.api.common.functions.ReduceFunction;
+import org.apache.flink.api.common.functions.RichFlatMapFunction;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.typeinfo.BasicArrayTypeInfo;
@@ -28,20 +29,18 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.ObjectArrayTypeInfo;
 import org.apache.flink.api.java.typeutils.TupleTypeInfo;
-import org.apache.flink.iteration.DataStreamList;
-import org.apache.flink.iteration.IterationBody;
-import org.apache.flink.iteration.IterationBodyResult;
-import org.apache.flink.iteration.IterationConfig;
 import org.apache.flink.iteration.IterationListener;
-import org.apache.flink.iteration.Iterations;
-import org.apache.flink.iteration.ReplayableDataStreamList;
 import org.apache.flink.iteration.datacache.nonkeyed.ListStateWithCache;
 import org.apache.flink.iteration.operator.OperatorStateUtils;
 import org.apache.flink.ml.api.Estimator;
-import org.apache.flink.ml.common.datastream.DataStreamUtils;
 import org.apache.flink.ml.common.distance.DistanceMeasure;
-import org.apache.flink.ml.common.iteration.ForwardInputsOfLastRound;
-import org.apache.flink.ml.common.iteration.TerminateOnMaxIter;
+import org.apache.flink.ml.common.ps.api.AlgorithmFlow;
+import org.apache.flink.ml.common.ps.api.CoTransformComponent;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
+import org.apache.flink.ml.common.ps.api.ManagedMemoryComponent;
+import org.apache.flink.ml.common.ps.api.SampleComponent;
+import org.apache.flink.ml.common.ps.api.TerminateComponent;
 import org.apache.flink.ml.linalg.BLAS;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.Vector;
@@ -53,13 +52,10 @@ import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
-import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
-import org.apache.flink.streaming.api.operators.TwoInputStreamOperator;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
+import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
 
@@ -87,35 +83,94 @@ public class KMeans implements Estimator<KMeans, KMeansModel>, KMeansParams<KMea
     public KMeansModel fit(Table... inputs) {
         Preconditions.checkArgument(inputs.length == 1);
 
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
-        DataStream<DenseVector> points =
-                tEnv.toDataStream(inputs[0])
-                        .map(row -> ((Vector) row.getField(getFeaturesCol())).toDense());
+        MLData mlData = MLData.of(inputs, new String[] {"data"});
+        AlgorithmFlow algorithmFlow = new AlgorithmFlow();
+        algorithmFlow
+                .add(
+                        new MLDataFunction(
+                                "map",
+                                (MapFunction<Row, DenseVector>)
+                                        row -> ((Vector) row.getField(getFeaturesCol())).toDense()))
+                .add(new SampleComponent(getK(), getSeed()).output("initCentroids"))
+                .add(
+                        new MLDataFunction(
+                                        "mapPartition",
+                                        (MapPartitionFunction<DenseVector, DenseVector[]>)
+                                                (iterable, collector) -> {
+                                                    List<DenseVector> list = new ArrayList<>();
+                                                    iterable.iterator().forEachRemaining(list::add);
+                                                    collector.collect(
+                                                            list.toArray(new DenseVector[0]));
+                                                })
+                                .returns(TypeInformation.of(DenseVector[].class))
+                                .withParallel(1))
+                .startIteration(new String[] {"initCentroids"}, new String[] {"data"}, false)
+                .add(
+                        new TerminateOnMaxComponent<DenseVector[]>(getMaxIter())
+                                .output("terminateData"))
+                .add(new MLDataFunction("broadcast").input("initCentroids").output("initCentroids"))
+                .add(
+                        new CentroidsUpdateAccumulator(
+                                        DistanceMeasure.getInstance(getDistanceMeasure()))
+                                .input("data")
+                                .with("initCentroids")
+                                .output("centroidIdAndPoints")
+                                .withOutType(
+                                        new TupleTypeInfo<>(
+                                                BasicArrayTypeInfo.INT_ARRAY_TYPE_INFO,
+                                                ObjectArrayTypeInfo.getInfoFor(
+                                                        DenseVectorTypeInfo.INSTANCE))))
+                .add(new ManagedMemoryComponent(100).input("centroidIdAndPoints"))
+                .add(
+                        new MLDataFunction("reduce", new CentroidsUpdateReducer())
+                                .isOnine(true)
+                                .output("newModelData"))
+                .add(new MLDataFunction("map", new ModelDataGenerator()))
+                .add(
+                        new MLDataFunction(
+                                        "map",
+                                        (MapFunction<KMeansModelData, DenseVector[]>)
+                                                kMeansModelData -> kMeansModelData.centroids)
+                                .withParallel(1)
+                                .output("newCentroids"))
+                .add(
+                        new MLDataFunction("flatMap", new ForwardInputsOfLastRound())
+                                .input("newModelData")
+                                .output("finalModel")
+                                .returns(TypeInformation.of(KMeansModelData.class)))
+                .endIteration(new String[] {"finalModel", "newCentroids", "terminateData"}, false);
 
-        DataStream<DenseVector[]> initCentroids = selectRandomCentroids(points, getK(), getSeed());
-
-        IterationConfig config =
-                IterationConfig.newBuilder()
-                        .setOperatorLifeCycle(IterationConfig.OperatorLifeCycle.ALL_ROUND)
-                        .build();
-
-        IterationBody body =
-                new KMeansIterationBody(
-                        getMaxIter(), DistanceMeasure.getInstance(getDistanceMeasure()));
-
-        DataStream<KMeansModelData> finalModelData =
-                Iterations.iterateBoundedStreamsUntilTermination(
-                                DataStreamList.of(initCentroids),
-                                ReplayableDataStreamList.notReplay(points),
-                                config,
-                                body)
-                        .get(0);
-
-        Table finalModelDataTable = tEnv.fromDataStream(finalModelData);
+        Table finalModelDataTable = algorithmFlow.apply(mlData).getTable();
         KMeansModel model = new KMeansModel().setModelData(finalModelDataTable);
         ParamUtils.updateExistingParams(model, paramMap);
         return model;
+    }
+
+    /** Comments. */
+    public static class TerminateOnMaxComponent<T> extends TerminateComponent<T, Integer> {
+
+        private final int maxIter;
+
+        private double loss = Double.MAX_VALUE;
+
+        public TerminateOnMaxComponent(Integer maxIter) {
+            this.maxIter = maxIter;
+        }
+
+        @Override
+        public void flatMap(T value, Collector<Integer> out) {}
+
+        @Override
+        public void onEpochWatermarkIncremented(
+                int epochWatermark, Context context, Collector<Integer> collector) {
+            if ((epochWatermark + 1) < maxIter) {
+                collector.collect(0);
+            }
+            loss = Double.MAX_VALUE;
+        }
+
+        @Override
+        public void onIterationTerminated(Context context, Collector<Integer> collector) {}
     }
 
     @Override
@@ -132,56 +187,7 @@ public class KMeans implements Estimator<KMeans, KMeansModel>, KMeansParams<KMea
         return paramMap;
     }
 
-    private static class KMeansIterationBody implements IterationBody {
-        private final int maxIterationNum;
-        private final DistanceMeasure distanceMeasure;
-
-        public KMeansIterationBody(int maxIterationNum, DistanceMeasure distanceMeasure) {
-            this.maxIterationNum = maxIterationNum;
-            this.distanceMeasure = distanceMeasure;
-        }
-
-        @Override
-        public IterationBodyResult process(
-                DataStreamList variableStreams, DataStreamList dataStreams) {
-            DataStream<DenseVector[]> centroids = variableStreams.get(0);
-            DataStream<DenseVector> points = dataStreams.get(0);
-
-            DataStream<Integer> terminationCriteria =
-                    centroids.flatMap(new TerminateOnMaxIter(maxIterationNum));
-
-            DataStream<Tuple2<Integer[], DenseVector[]>> centroidIdAndPoints =
-                    points.connect(centroids.broadcast())
-                            .transform(
-                                    "CentroidsUpdateAccumulator",
-                                    new TupleTypeInfo<>(
-                                            BasicArrayTypeInfo.INT_ARRAY_TYPE_INFO,
-                                            ObjectArrayTypeInfo.getInfoFor(
-                                                    DenseVectorTypeInfo.INSTANCE)),
-                                    new CentroidsUpdateAccumulator(distanceMeasure));
-
-            DataStreamUtils.setManagedMemoryWeight(centroidIdAndPoints.getTransformation(), 100);
-
-            int parallelism = centroidIdAndPoints.getParallelism();
-            DataStream<KMeansModelData> newModelData =
-                    centroidIdAndPoints
-                            .countWindowAll(parallelism)
-                            .reduce(new CentroidsUpdateReducer())
-                            .map(new ModelDataGenerator());
-
-            DataStream<DenseVector[]> newCentroids =
-                    newModelData.map(x -> x.centroids).setParallelism(1);
-
-            DataStream<KMeansModelData> finalModelData =
-                    newModelData.flatMap(new ForwardInputsOfLastRound<>());
-
-            return new IterationBodyResult(
-                    DataStreamList.of(newCentroids),
-                    DataStreamList.of(finalModelData),
-                    terminationCriteria);
-        }
-    }
-
+    /** Comments. */
     private static class CentroidsUpdateReducer
             implements ReduceFunction<Tuple2<Integer[], DenseVector[]>> {
         @Override
@@ -197,6 +203,7 @@ public class KMeans implements Estimator<KMeans, KMeansModel>, KMeansParams<KMea
         }
     }
 
+    /** Comments. */
     private static class ModelDataGenerator
             implements MapFunction<Tuple2<Integer[], DenseVector[]>, KMeansModelData> {
         @Override
@@ -212,10 +219,8 @@ public class KMeans implements Estimator<KMeans, KMeansModel>, KMeansParams<KMea
     }
 
     private static class CentroidsUpdateAccumulator
-            extends AbstractStreamOperator<Tuple2<Integer[], DenseVector[]>>
-            implements TwoInputStreamOperator<
-                            DenseVector, DenseVector[], Tuple2<Integer[], DenseVector[]>>,
-                    IterationListener<Tuple2<Integer[], DenseVector[]>> {
+            extends CoTransformComponent<
+                    DenseVector, DenseVector[], Tuple2<Integer[], DenseVector[]>> {
 
         private final DistanceMeasure distanceMeasure;
 
@@ -295,7 +300,6 @@ public class KMeans implements Estimator<KMeans, KMeansModel>, KMeansParams<KMea
             }
 
             output.collect(new StreamRecord<>(Tuple2.of(counts, newCentroids)));
-
             centroids.clear();
         }
 
@@ -307,22 +311,34 @@ public class KMeans implements Estimator<KMeans, KMeansModel>, KMeansParams<KMea
         }
     }
 
-    public static DataStream<DenseVector[]> selectRandomCentroids(
-            DataStream<DenseVector> data, int k, long seed) {
-        DataStream<DenseVector[]> resultStream =
-                DataStreamUtils.mapPartition(
-                        DataStreamUtils.sample(data, k, seed),
-                        new MapPartitionFunction<DenseVector, DenseVector[]>() {
-                            @Override
-                            public void mapPartition(
-                                    Iterable<DenseVector> iterable,
-                                    Collector<DenseVector[]> collector) {
-                                List<DenseVector> list = new ArrayList<>();
-                                iterable.iterator().forEachRemaining(list::add);
-                                collector.collect(list.toArray(new DenseVector[0]));
-                            }
-                        });
-        resultStream.getTransformation().setParallelism(1);
-        return resultStream;
+    /** Comments. */
+    public static class ForwardInputsOfLastRound<T> extends RichFlatMapFunction<T, T>
+            implements IterationListener<T> {
+        private List<T> valuesInLastEpoch = new ArrayList<>();
+        private List<T> valuesInCurrentEpoch = new ArrayList<>();
+
+        @Override
+        public void flatMap(T value, Collector<T> out) {
+            valuesInCurrentEpoch.add(value);
+        }
+
+        @Override
+        public void onEpochWatermarkIncremented(
+                int epochWatermark, Context context, Collector<T> out) {
+            valuesInLastEpoch = valuesInCurrentEpoch;
+            valuesInCurrentEpoch = new ArrayList<>();
+        }
+
+        @Override
+        public void onIterationTerminated(Context context, Collector<T> out) {
+            for (T value : valuesInLastEpoch) {
+                out.collect(value);
+            }
+            if (!valuesInCurrentEpoch.isEmpty()) {
+                throw new IllegalStateException(
+                        "flatMap() is invoked since the last onEpochWatermarkIncremented callback");
+            }
+            valuesInLastEpoch.clear();
+        }
     }
 }

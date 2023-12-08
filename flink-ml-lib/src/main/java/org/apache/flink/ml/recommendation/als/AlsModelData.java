@@ -27,11 +27,6 @@ import org.apache.flink.core.fs.FSDataInputStream;
 import org.apache.flink.core.memory.DataInputViewStreamWrapper;
 import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
-import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.table.api.Table;
-import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
-import org.apache.flink.types.Row;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -59,22 +54,6 @@ public class AlsModelData {
     public AlsModelData(AlsModelData modelData) {
         this.userFactors = modelData.userFactors;
         this.itemFactors = modelData.itemFactors;
-    }
-
-    /**
-     * Converts the table model to a data stream.
-     *
-     * @param modelData The table model data.
-     * @return The data stream model data.
-     */
-    public static DataStream<AlsModelData> getModelDataStream(Table modelData) {
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) modelData).getTableEnvironment();
-        return tEnv.toDataStream(modelData).map(AlsModelData::parseModel);
-    }
-
-    private static AlsModelData parseModel(Row modelRow) {
-        return new AlsModelData(modelRow.getFieldAs(0));
     }
 
     /** Data encoder for {@link AlsModel}. */

@@ -44,7 +44,7 @@ public interface FmCommonParams<T>
             new DoubleParam("learnRate", "learn rate", 0.01, ParamValidators.gt(0.0));
 
     Param<String> METHOD =
-            new StringParam("method", "optimize method", "AdaGrad", ParamValidators.notNull());
+            new StringParam("method", "optimize method", "AdaGrad_AVG", ParamValidators.notNull());
 
     Param<Double> ALPHA =
             new DoubleParam(

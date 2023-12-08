@@ -29,9 +29,8 @@ import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.api.java.tuple.Tuple5;
 import org.apache.flink.ml.api.AlgoOperator;
-import org.apache.flink.ml.common.broadcast.BroadcastUtils;
-import org.apache.flink.ml.common.datastream.DataStreamUtils;
 import org.apache.flink.ml.common.param.HasFlatten;
+import org.apache.flink.ml.common.ps.api.MLData;
 import org.apache.flink.ml.linalg.BLAS;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.Vector;
@@ -39,10 +38,8 @@ import org.apache.flink.ml.linalg.typeinfo.VectorTypeInfo;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
@@ -51,7 +48,6 @@ import org.apache.commons.collections.IteratorUtils;
 import org.apache.commons.math3.distribution.FDistribution;
 
 import java.io.IOException;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -88,104 +84,87 @@ public class FValueTest implements AlgoOperator<FValueTest>, FValueTestParams<FV
         ParamUtils.initializeMapWithDefaultValues(paramMap, this);
     }
 
-    @SuppressWarnings("unchecked, rawtypes")
     @Override
     public Table[] transform(Table... inputs) {
         Preconditions.checkArgument(inputs.length == 1);
 
         final String featuresCol = getFeaturesCol();
         final String labelCol = getLabelCol();
-        final String broadcastSummaryKey = "broadcastSummaryKey";
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
 
-        DataStream<Tuple2<Vector, Double>> inputData =
-                tEnv.toDataStream(inputs[0])
-                        .map(
-                                (MapFunction<Row, Tuple2<Vector, Double>>)
-                                        row -> {
-                                            Number number = (Number) row.getField(labelCol);
-                                            Preconditions.checkNotNull(
-                                                    number, "Input data must contain label value.");
-                                            return new Tuple2<>(
-                                                    ((Vector) row.getField(featuresCol)),
-                                                    number.doubleValue());
-                                        })
-                        .returns(Types.TUPLE(VectorTypeInfo.INSTANCE, Types.DOUBLE));
+        MLData mlData = MLData.of(inputs, new String[] {"data"});
 
-        DataStream<Tuple5<Long, Double, Double, DenseVector, DenseVector>> summaries =
-                DataStreamUtils.aggregate(inputData, new SummaryAggregator());
+        mlData.map(
+                "data",
+                "inputData",
+                null,
+                (MapFunction<Row, Tuple2<Vector, Double>>)
+                        row -> {
+                            Number number = (Number) row.getField(labelCol);
+                            Preconditions.checkNotNull(
+                                    number, "Input data must contain label value.");
+                            return new Tuple2<>(
+                                    ((Vector) row.getField(featuresCol)), number.doubleValue());
+                        },
+                Types.TUPLE(VectorTypeInfo.INSTANCE, Types.DOUBLE));
 
-        DataStream<DenseVector> covarianceInEachPartition =
-                BroadcastUtils.withBroadcastStream(
-                        Collections.singletonList(inputData),
-                        Collections.singletonMap(broadcastSummaryKey, summaries),
-                        inputList -> {
-                            DataStream input = inputList.get(0);
-                            return DataStreamUtils.mapPartition(
-                                    input, new CalCovarianceOperator(broadcastSummaryKey));
+        mlData.aggregate("inputData", "summary", new SummaryAggregator());
+        mlData.mapPartition(
+                "inputData",
+                "covarianceInEachPartition",
+                new String[] {"summary"},
+                new CalCovarianceOperator("summary"),
+                null,
+                -1);
+
+        mlData.reduce(
+                "covarianceInEachPartition",
+                "reducedCovariance",
+                (ReduceFunction<DenseVector>)
+                        (sums1, sums2) -> {
+                            BLAS.axpy(1.0, sums1, sums2);
+                            return sums2;
                         });
 
-        DataStream<DenseVector> reducedCovariance =
-                DataStreamUtils.reduce(
-                        covarianceInEachPartition,
-                        (ReduceFunction<DenseVector>)
-                                (sums1, sums2) -> {
-                                    BLAS.axpy(1.0, sums1, sums2);
-                                    return sums2;
-                                });
+        mlData.mapPartition(
+                "reducedCovariance",
+                "result",
+                new String[] {"summary"},
+                new CalFValueOperator("summary"),
+                null,
+                -1);
 
-        DataStream result =
-                BroadcastUtils.withBroadcastStream(
-                        Collections.singletonList(reducedCovariance),
-                        Collections.singletonMap(broadcastSummaryKey, summaries),
-                        inputList -> {
-                            DataStream input = inputList.get(0);
-                            return DataStreamUtils.mapPartition(
-                                    input, new CalFValueOperator(broadcastSummaryKey));
-                        });
-
-        return new Table[] {convertToTable(tEnv, result, getFlatten())};
-    }
-
-    private Table convertToTable(
-            StreamTableEnvironment tEnv,
-            DataStream<Tuple4<Integer, Double, Long, Double>> dataStream,
-            boolean flatten) {
-        if (flatten) {
-            return tEnv.fromDataStream(dataStream)
-                    .as("featureIndex", "pValue", "degreeOfFreedom", "fValue");
-        } else {
-            DataStream<Tuple3<DenseVector, long[], DenseVector>> output =
-                    DataStreamUtils.mapPartition(
-                            dataStream,
-                            new MapPartitionFunction<
-                                    Tuple4<Integer, Double, Long, Double>,
-                                    Tuple3<DenseVector, long[], DenseVector>>() {
-                                @Override
-                                public void mapPartition(
-                                        Iterable<Tuple4<Integer, Double, Long, Double>> iterable,
-                                        Collector<Tuple3<DenseVector, long[], DenseVector>>
-                                                collector) {
-                                    List<Tuple4<Integer, Double, Long, Double>> rows =
-                                            IteratorUtils.toList(iterable.iterator());
-                                    int numOfFeatures = rows.size();
-
-                                    DenseVector pValues = new DenseVector(numOfFeatures);
-                                    long[] degrees = new long[numOfFeatures];
-                                    DenseVector fValues = new DenseVector(numOfFeatures);
-
-                                    for (int i = 0; i < numOfFeatures; i++) {
-                                        Tuple4<Integer, Double, Long, Double> tuple = rows.get(i);
-                                        pValues.set(i, tuple.f1);
-                                        degrees[i] = tuple.f2;
-                                        fValues.set(i, tuple.f3);
-                                    }
-                                    collector.collect(Tuple3.of(pValues, degrees, fValues));
-                                }
-                            });
-            return tEnv.fromDataStream(output).as("pValues", "degreesOfFreedom", "fValues");
+        if (getFlatten()) {
+            return new Table[] {
+                mlData.getTable("result").as("featureIndex", "pValue", "degreeOfFreedom", "fValue")
+            };
         }
+        mlData.mapPartition(
+                new MapPartitionFunction<
+                        Tuple4<Integer, Double, Long, Double>,
+                        Tuple3<DenseVector, long[], DenseVector>>() {
+                    @Override
+                    public void mapPartition(
+                            Iterable<Tuple4<Integer, Double, Long, Double>> iterable,
+                            Collector<Tuple3<DenseVector, long[], DenseVector>> collector) {
+                        List<Tuple4<Integer, Double, Long, Double>> rows =
+                                IteratorUtils.toList(iterable.iterator());
+                        int numOfFeatures = rows.size();
+
+                        DenseVector pValues = new DenseVector(numOfFeatures);
+                        long[] degrees = new long[numOfFeatures];
+                        DenseVector fValues = new DenseVector(numOfFeatures);
+
+                        for (int i = 0; i < numOfFeatures; i++) {
+                            Tuple4<Integer, Double, Long, Double> tuple = rows.get(i);
+                            pValues.set(i, tuple.f1);
+                            degrees[i] = tuple.f2;
+                            fValues.set(i, tuple.f3);
+                        }
+                        collector.collect(Tuple3.of(pValues, degrees, fValues));
+                    }
+                });
+
+        return new Table[] {mlData.getTable("result").as("pValues", "degreesOfFreedom", "fValues")};
     }
 
     /** Computes the covariance of each feature on each partition. */

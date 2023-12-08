@@ -23,12 +23,13 @@ import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.typeinfo.PrimitiveArrayTypeInfo;
 import org.apache.flink.iteration.IterationListener;
-import org.apache.flink.ml.common.ps.iterations.AllReduceStage;
-import org.apache.flink.ml.common.ps.iterations.IterationStage;
-import org.apache.flink.ml.common.ps.iterations.PullStage;
-import org.apache.flink.ml.common.ps.iterations.PullStage.Aggregator;
-import org.apache.flink.ml.common.ps.iterations.PushStage;
-import org.apache.flink.ml.common.ps.iterations.ReduceScatterStage;
+import org.apache.flink.ml.common.ps.iterations.BaseComponent;
+import org.apache.flink.ml.common.ps.iterations.PsAllReduceComponent;
+import org.apache.flink.ml.common.ps.iterations.PullComponent;
+import org.apache.flink.ml.common.ps.iterations.PullComponent.Aggregator;
+import org.apache.flink.ml.common.ps.iterations.PushComponent;
+import org.apache.flink.ml.common.ps.iterations.ReduceScatterComponent;
+import org.apache.flink.ml.common.ps.sarray.SharedDoubleArray;
 import org.apache.flink.ml.common.ps.updater.ModelUpdater;
 import org.apache.flink.ml.util.Bits;
 import org.apache.flink.runtime.state.StateInitializationContext;
@@ -67,8 +68,8 @@ import java.util.concurrent.LinkedBlockingDeque;
  * <ul>
  *   <li>The server operator deals with the message from workers and decides when to process the
  *       received message.
- *   <li>The server operator calls {@link ModelUpdater#update(long[], double[])} and {@link
- *       ModelUpdater#get(long[])} to process the messages in detail.
+ *   <li>The server operator calls {@link ModelUpdater} and {@link ModelUpdater#get(long[])} to
+ *       process the messages in detail.
  *   <li>The server operator triggers checkpoint for {@link ModelUpdater}.
  *   <li>The server operator outputs the final output parameters by calling {@link
  *       ModelUpdater#getModelSegments()}.
@@ -77,19 +78,17 @@ import java.util.concurrent.LinkedBlockingDeque;
  * <p>Moreover, it accepts all-reduce/reduce-scatter request from workers and returns the reduced
  * result to all workers. Note that the input of all-reduce/reduce-scatter operation is not going to
  * be used in {@link ModelUpdater}.
- *
- * @param <MT> output format of model data.
  */
-public class ServerOperator<MT> extends AbstractStreamOperator<byte[]>
+public class ServerOperator extends AbstractStreamOperator<byte[]>
         implements OneInputStreamOperator<byte[], byte[]>, IterationListener<byte[]> {
     /** The iterationStage list. */
-    private final List<IterationStage> stageList;
+    private final List<BaseComponent> stageList;
     /** Number of workers to communicate with. */
     private final int numWorkers;
     /** The logic to answer push/pull request from workers. */
-    private final ModelUpdater<MT> modelUpdater;
+    private final ModelUpdater<?> modelUpdater;
     /** Output tag of model data. */
-    private final OutputTag<MT> modelOutputTag;
+    private final OutputTag<Object> modelOutputTag;
     /** Index of the current server task. */
     private transient int serverId;
     /** Thread pool to answer push/pull requests, to decouple the network and computation. */
@@ -110,10 +109,10 @@ public class ServerOperator<MT> extends AbstractStreamOperator<byte[]>
     private ListState<byte[]> accPushesByStageState;
 
     public ServerOperator(
-            List<IterationStage> stageList,
+            List<BaseComponent> stageList,
             int numWorkers,
-            ModelUpdater<MT> modelUpdater,
-            OutputTag<MT> modelOutputTag) {
+            ModelUpdater<?> modelUpdater,
+            OutputTag<Object> modelOutputTag) {
         this.stageList = stageList;
         this.numWorkers = numWorkers;
         this.modelUpdater = modelUpdater;
@@ -131,12 +130,17 @@ public class ServerOperator<MT> extends AbstractStreamOperator<byte[]>
     @Override
     public void processElement(StreamRecord<byte[]> element) throws Exception {
         Message message = new Message(element.getValue());
-        IterationStage stage = stageList.get(message.getStageId() % stageList.size());
-        if (stage instanceof PushStage) {
-            futuresInEpoch.add(singleThreadExecutor.submit(() -> processPushRequest(message)));
-        } else if (stage instanceof PullStage
-                || stage instanceof AllReduceStage
-                || stage instanceof ReduceScatterStage) {
+        BaseComponent stage = stageList.get(message.getStageId() % stageList.size());
+        if (stage instanceof PushComponent) {
+            if (((PushComponent) stage).values.get() instanceof SharedDoubleArray) {
+                futuresInEpoch.add(singleThreadExecutor.submit(() -> processPushRequest(message)));
+            } else {
+                futuresInEpoch.add(
+                        singleThreadExecutor.submit(() -> processPushFloatRequest(message)));
+            }
+        } else if (stage instanceof PullComponent
+                || stage instanceof PsAllReduceComponent
+                || stage instanceof ReduceScatterComponent) {
             pendingRequests.add(message.bytes);
         } else {
             throw new IllegalStateException(
@@ -159,20 +163,14 @@ public class ServerOperator<MT> extends AbstractStreamOperator<byte[]>
                 // The push is not empty.
                 int numDoublesPerKey;
                 Object object = currentAccPush.values().iterator().next();
-                if (object instanceof Double) {
-                    numDoublesPerKey = 1;
-                } else {
-                    numDoublesPerKey = ((double[]) object).length;
-                }
-
                 ObjectIterator<Map.Entry<Long, ?>> objectIterator =
                         currentAccPush.long2ObjectEntrySet().fastIterator();
-
                 long[] assembledKeys = new long[currentAccPush.size()];
-                double[] assembledValues = new double[currentAccPush.size() * numDoublesPerKey];
-
                 int idx = 0;
-                if (numDoublesPerKey == 1) {
+                if (object instanceof Double) {
+                    numDoublesPerKey = 1;
+                    double[] assembledValues = new double[currentAccPush.size() * numDoublesPerKey];
+
                     while (objectIterator.hasNext()) {
                         Map.Entry<Long, Double> entry =
                                 (Map.Entry<Long, Double>) objectIterator.next();
@@ -180,7 +178,25 @@ public class ServerOperator<MT> extends AbstractStreamOperator<byte[]>
                         assembledValues[idx] = entry.getValue();
                         idx++;
                     }
-                } else {
+                    currentAccPush.clear();
+                    ((ModelUpdater<double[]>) modelUpdater).update(assembledKeys, assembledValues);
+                } else if (object instanceof Float) {
+                    numDoublesPerKey = 1;
+                    float[] assembledValues = new float[currentAccPush.size() * numDoublesPerKey];
+
+                    while (objectIterator.hasNext()) {
+                        Map.Entry<Long, Float> entry =
+                                (Map.Entry<Long, Float>) objectIterator.next();
+                        assembledKeys[idx] = entry.getKey();
+                        assembledValues[idx] = entry.getValue();
+                        idx++;
+                    }
+                    currentAccPush.clear();
+                    ((ModelUpdater<float[]>) modelUpdater).update(assembledKeys, assembledValues);
+                } else if (object instanceof double[]) {
+                    numDoublesPerKey = ((double[]) object).length;
+                    double[] assembledValues = new double[currentAccPush.size() * numDoublesPerKey];
+
                     while (objectIterator.hasNext()) {
                         Map.Entry<Long, double[]> entry =
                                 (Map.Entry<Long, double[]>) objectIterator.next();
@@ -193,9 +209,28 @@ public class ServerOperator<MT> extends AbstractStreamOperator<byte[]>
                                 numDoublesPerKey);
                         idx++;
                     }
+
+                    currentAccPush.clear();
+                    ((ModelUpdater<double[]>) modelUpdater).update(assembledKeys, assembledValues);
+                } else if (object instanceof float[]) {
+                    numDoublesPerKey = ((float[]) object).length;
+                    float[] assembledValues = new float[currentAccPush.size() * numDoublesPerKey];
+
+                    while (objectIterator.hasNext()) {
+                        Map.Entry<Long, float[]> entry =
+                                (Map.Entry<Long, float[]>) objectIterator.next();
+                        assembledKeys[idx] = entry.getKey();
+                        System.arraycopy(
+                                entry.getValue(),
+                                0,
+                                assembledValues,
+                                idx * numDoublesPerKey,
+                                numDoublesPerKey);
+                        idx++;
+                    }
+                    currentAccPush.clear();
+                    ((ModelUpdater<float[]>) modelUpdater).update(assembledKeys, assembledValues);
                 }
-                currentAccPush.clear();
-                modelUpdater.update(assembledKeys, assembledValues);
             }
         }
 
@@ -204,15 +239,22 @@ public class ServerOperator<MT> extends AbstractStreamOperator<byte[]>
         if (requestIterator.hasNext()) {
             Message message = new Message(requestIterator.next());
             int stageId = message.getStageId();
-            IterationStage stage = stageList.get(stageId % stageList.size());
+            BaseComponent stage = stageList.get(stageId % stageList.size());
             requestIterator = pendingRequests.get().iterator();
-            if (stage instanceof PullStage) {
+            if (stage instanceof PullComponent) {
                 final int blockingQueueCapacity = 20;
                 LinkedBlockingDeque<byte[]> pullsResponse =
                         new LinkedBlockingDeque<>(blockingQueueCapacity);
-                for (byte[] bytes : pendingRequests.get()) {
-                    singleThreadExecutor.submit(
-                            () -> processPullRequest(new Message(bytes), pullsResponse));
+                if (((PullComponent) stage).values.get() instanceof SharedDoubleArray) {
+                    for (byte[] bytes : pendingRequests.get()) {
+                        singleThreadExecutor.submit(
+                                () -> processPullRequest(new Message(bytes), pullsResponse));
+                    }
+                } else {
+                    for (byte[] bytes : pendingRequests.get()) {
+                        singleThreadExecutor.submit(
+                                () -> processPullFloatRequest(new Message(bytes), pullsResponse));
+                    }
                 }
                 int numResponsesSent = 0;
                 while (numResponsesSent < numWorkers) {
@@ -220,9 +262,9 @@ public class ServerOperator<MT> extends AbstractStreamOperator<byte[]>
                     output.collect(new StreamRecord<>(response.bytes));
                     numResponsesSent++;
                 }
-            } else if (stage instanceof AllReduceStage) {
+            } else if (stage instanceof PsAllReduceComponent) {
                 processAllReduceRequest(requestIterator);
-            } else if (stage instanceof ReduceScatterStage) {
+            } else if (stage instanceof ReduceScatterComponent) {
                 processReduceScatterRequest(requestIterator);
             } else {
                 throw new IllegalStateException(
@@ -235,9 +277,9 @@ public class ServerOperator<MT> extends AbstractStreamOperator<byte[]>
 
     @Override
     public void onIterationTerminated(Context context, Collector<byte[]> collector) {
-        Iterator<MT> modelSegments = modelUpdater.getModelSegments();
+        Iterator<Object> modelSegments = modelUpdater.getModelSegments();
         while (modelSegments.hasNext()) {
-            MT modelSegment = modelSegments.next();
+            Object modelSegment = modelSegments.next();
             output.collect(modelOutputTag, new StreamRecord<>(modelSegment));
         }
     }
@@ -362,6 +404,15 @@ public class ServerOperator<MT> extends AbstractStreamOperator<byte[]>
             bytes = new byte[Long.BYTES + Bits.getDoubleArraySizeInBytes(value)];
             Bits.putLong(bytes, 0, obj.getKey());
             Bits.putDoubleArray(value, bytes, Long.BYTES);
+        } else if (obj.getValue() instanceof float[]) {
+            float[] value = (float[]) obj.getValue();
+            bytes = new byte[Long.BYTES + Bits.getFloatArraySizeInBytes(value)];
+            Bits.putLong(bytes, 0, obj.getKey());
+            Bits.putFloatArray(value, bytes, Long.BYTES);
+        } else if (obj.getValue() instanceof Float) {
+            bytes = new byte[Long.BYTES + Float.BYTES];
+            Bits.putLong(bytes, 0, obj.getKey());
+            Bits.putInt(bytes, Long.BYTES, Float.floatToIntBits((Float) obj.getValue()));
         } else {
             bytes = new byte[Long.BYTES + Double.BYTES];
             Bits.putLong(bytes, 0, obj.getKey());
@@ -376,26 +427,27 @@ public class ServerOperator<MT> extends AbstractStreamOperator<byte[]>
         int stageId = message.getStageId();
         double[] values = message.getValuesInDoubleArray();
 
-        accPushesByStage.putIfAbsent(stageId, new Long2ObjectOpenHashMap());
-        Long2ObjectOpenHashMap currentAccKvs = accPushesByStage.get(stageId);
+        accPushesByStage.putIfAbsent(stageId, new Long2ObjectOpenHashMap<>());
 
         if (keys.length != 0) {
             ReduceFunction<Double> reduceFunc =
-                    ((PushStage) stageList.get(stageId % stageList.size())).reduceFunc;
+                    ((PushComponent) stageList.get(stageId % stageList.size())).reduceFunc;
             if (values.length == keys.length) {
+                Long2ObjectOpenHashMap<Double> currentAccKvs = accPushesByStage.get(stageId);
                 for (int i = 0; i < keys.length; i++) {
                     if (currentAccKvs.containsKey(keys[i])) {
-                        double currentVal = (Double) currentAccKvs.get(keys[i]);
+                        double currentVal = currentAccKvs.get(keys[i]);
                         currentAccKvs.put(keys[i], reduceFunc.reduce(currentVal, values[i]));
                     } else {
                         currentAccKvs.put(keys[i], (Double) values[i]);
                     }
                 }
             } else {
+                Long2ObjectOpenHashMap<double[]> currentAccKvs = accPushesByStage.get(stageId);
                 int numDoublesPerKey = values.length / keys.length;
                 for (int i = 0; i < keys.length; i++) {
                     if (currentAccKvs.containsKey(keys[i])) {
-                        double[] currentVal = (double[]) currentAccKvs.get(keys[i]);
+                        double[] currentVal = currentAccKvs.get(keys[i]);
                         for (int j = 0; j < numDoublesPerKey; j++) {
                             currentVal[j] =
                                     reduceFunc.reduce(
@@ -415,6 +467,52 @@ public class ServerOperator<MT> extends AbstractStreamOperator<byte[]>
         return new Object();
     }
 
+    @SuppressWarnings("unchecked")
+    private Object processPushFloatRequest(Message message) throws Exception {
+        long[] keys = message.getKeys();
+        int stageId = message.getStageId();
+        float[] values = message.getValuesInFLoatArray();
+
+        accPushesByStage.putIfAbsent(stageId, new Long2ObjectOpenHashMap<>());
+
+        if (keys.length != 0) {
+            ReduceFunction<Float> reduceFunc =
+                    ((PushComponent) stageList.get(stageId % stageList.size())).floatReduceFunc;
+            if (values.length == keys.length) {
+                Long2ObjectOpenHashMap<Float> currentAccKvs = accPushesByStage.get(stageId);
+                for (int i = 0; i < keys.length; i++) {
+                    if (currentAccKvs.containsKey(keys[i])) {
+                        float currentVal = currentAccKvs.get(keys[i]);
+                        currentAccKvs.put(keys[i], reduceFunc.reduce(currentVal, values[i]));
+                    } else {
+                        currentAccKvs.put(keys[i], (Float) values[i]);
+                    }
+                }
+            } else {
+                Long2ObjectOpenHashMap<float[]> currentAccKvs = accPushesByStage.get(stageId);
+                int numFloatsPerKey = values.length / keys.length;
+                for (int i = 0; i < keys.length; i++) {
+                    if (currentAccKvs.containsKey(keys[i])) {
+                        float[] currentVal = currentAccKvs.get(keys[i]);
+                        for (int j = 0; j < numFloatsPerKey; j++) {
+                            currentVal[j] =
+                                    reduceFunc.reduce(
+                                            currentVal[j], values[i * numFloatsPerKey + j]);
+                        }
+                    } else {
+                        currentAccKvs.put(
+                                keys[i],
+                                Arrays.copyOfRange(
+                                        values,
+                                        i * numFloatsPerKey,
+                                        i * numFloatsPerKey + numFloatsPerKey));
+                    }
+                }
+            }
+        }
+        return new Object();
+    }
+
     private void processPullRequest(Message message, LinkedBlockingDeque<byte[]> pullsResponse) {
         int workerId = message.getWorkerId();
         long[] keys = message.getKeys();
@@ -426,13 +524,13 @@ public class ServerOperator<MT> extends AbstractStreamOperator<byte[]>
                     new Message(
                             workerId, serverId, message.getStageId(), new long[0], new double[0]);
         } else {
-            double[] pulledValues = modelUpdater.get(keys);
+            double[] pulledValues = (double[]) modelUpdater.get(keys);
             Preconditions.checkState(pulledValues.length % keys.length == 0);
             int numDoublesPerKey = pulledValues.length / keys.length;
 
             double[] aggregatedPullValues = null;
             Aggregator<double[], double[]> aggregator =
-                    ((PullStage) (stageList.get(message.getStageId() % stageList.size())))
+                    ((PullComponent) (stageList.get(message.getStageId() % stageList.size())))
                             .aggregator;
             if (aggregator != null) {
                 // Processes the pulled values if the aggregator is not null.
@@ -462,12 +560,62 @@ public class ServerOperator<MT> extends AbstractStreamOperator<byte[]>
         }
     }
 
+    private void processPullFloatRequest(
+            Message message, LinkedBlockingDeque<byte[]> pullsResponse) {
+        int workerId = message.getWorkerId();
+        long[] keys = message.getKeys();
+        Message response;
+
+        if (keys.length == 0) {
+            // No request on this server.
+            response =
+                    new Message(
+                            workerId, serverId, message.getStageId(), new long[0], new float[0]);
+        } else {
+            float[] pulledValues = (float[]) modelUpdater.get(keys);
+            Preconditions.checkState(pulledValues.length % keys.length == 0);
+            int numFloatsPerKey = pulledValues.length / keys.length;
+
+            float[] aggregatedPullValues = null;
+            PullComponent.Aggregator<float[], float[]> aggregator =
+                    ((PullComponent) (stageList.get(message.getStageId() % stageList.size())))
+                            .floatAggregator;
+            if (aggregator != null) {
+                // Processes the pulled values if the aggregator is not null.
+                float[] tmp = new float[numFloatsPerKey];
+                for (int i = 0; i < keys.length; i++) {
+                    System.arraycopy(pulledValues, i * numFloatsPerKey, tmp, 0, numFloatsPerKey);
+                    aggregatedPullValues = aggregator.add(tmp, aggregatedPullValues);
+                }
+            } else {
+                aggregatedPullValues = new float[pulledValues.length];
+                System.arraycopy(pulledValues, 0, aggregatedPullValues, 0, pulledValues.length);
+            }
+
+            response =
+                    new Message(
+                            workerId,
+                            serverId,
+                            message.getStageId(),
+                            new long[0],
+                            aggregatedPullValues);
+        }
+        while (!pullsResponse.offer(response.bytes)) {
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private <V> void processAllReduceRequest(Iterator<byte[]> requests) throws Exception {
         byte[] request = requests.next();
         Message message = new Message(request);
         int stageId = message.getStageId();
-        AllReduceStage<V> stage = (AllReduceStage<V>) stageList.get(stageId % stageList.size());
+        PsAllReduceComponent<V> stage =
+                (PsAllReduceComponent<V>) stageList.get(stageId % stageList.size());
         V[] reducedResult = message.getValues(stage.typeSerializer);
         ReduceFunction<V[]> reduceFunction = stage.reducer;
 
@@ -491,8 +639,8 @@ public class ServerOperator<MT> extends AbstractStreamOperator<byte[]>
         byte[] request = requests.next();
         Message message = new Message(request);
         int stageId = message.getStageId();
-        ReduceScatterStage<V> stage =
-                (ReduceScatterStage<V>) stageList.get(stageId % stageList.size());
+        ReduceScatterComponent<V> stage =
+                (ReduceScatterComponent<V>) stageList.get(stageId % stageList.size());
         V[] reducedResult = message.getValues(stage.typeSerializer);
         ReduceFunction<V[]> reduceFunction = stage.reducer;
 

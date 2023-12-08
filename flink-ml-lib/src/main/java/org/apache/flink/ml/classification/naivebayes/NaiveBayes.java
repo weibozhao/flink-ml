@@ -22,24 +22,22 @@ import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.MapPartitionFunction;
 import org.apache.flink.api.common.typeinfo.Types;
+import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.ml.api.Estimator;
-import org.apache.flink.ml.common.datastream.DataStreamUtils;
+import org.apache.flink.ml.common.ps.api.AlgorithmFlow;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
 import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.linalg.Vectors;
-import org.apache.flink.ml.linalg.typeinfo.DenseVectorTypeInfo;
 import org.apache.flink.ml.linalg.typeinfo.VectorTypeInfo;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.table.api.DataTypes;
-import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
@@ -72,69 +70,78 @@ public class NaiveBayes
         final String labelCol = getLabelCol();
         final double smoothing = getSmoothing();
 
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
-        DataStream<Tuple2<Vector, Double>> input =
-                tEnv.toDataStream(inputs[0])
-                        .map(
-                                (MapFunction<Row, Tuple2<Vector, Double>>)
-                                        row -> {
-                                            Number number = (Number) row.getField(labelCol);
-                                            Preconditions.checkNotNull(
-                                                    number,
-                                                    "Input data should contain label value.");
-                                            Preconditions.checkArgument(
-                                                    number.intValue() == number.doubleValue(),
-                                                    "Label value should be indexed number.");
-                                            return new Tuple2<>(
-                                                    (Vector) row.getField(featuresCol),
-                                                    number.doubleValue());
-                                        },
-                                Types.TUPLE(VectorTypeInfo.INSTANCE, Types.DOUBLE));
+        MLData mlData = MLData.of(inputs);
 
-        DataStream<Tuple3<Double, Integer, Double>> feature =
-                input.flatMap(new ExtractFeatureFunction());
-
-        DataStream<Tuple4<Double, Integer, Map<Double, Double>, Integer>> featureWeight =
-                DataStreamUtils.mapPartition(
-                        feature.keyBy(value -> new Tuple2<>(value.f0, value.f1).hashCode()),
-                        new GenerateFeatureWeightMapFunction(),
-                        Types.TUPLE(
-                                Types.DOUBLE,
-                                Types.INT,
-                                Types.MAP(Types.DOUBLE, Types.DOUBLE),
-                                Types.INT));
-
-        DataStream<Tuple3<Double, Integer, Map<Double, Double>[]>> aggregatedArrays =
-                DataStreamUtils.mapPartition(
-                        featureWeight.keyBy(value -> value.f0),
-                        new AggregateIntoArrayFunction(),
-                        Types.TUPLE(
-                                Types.DOUBLE,
-                                Types.INT,
-                                Types.OBJECT_ARRAY(Types.MAP(Types.DOUBLE, Types.DOUBLE))));
-
-        DataStream<NaiveBayesModelData> modelData =
-                DataStreamUtils.mapPartition(
-                        aggregatedArrays,
-                        new GenerateModelFunction(smoothing),
-                        NaiveBayesModelData.TYPE_INFO);
-        modelData.getTransformation().setParallelism(1);
-
-        Schema schema =
-                Schema.newBuilder()
-                        .column(
-                                "theta",
-                                DataTypes.ARRAY(
-                                        DataTypes.ARRAY(
-                                                DataTypes.MAP(
-                                                        DataTypes.DOUBLE(), DataTypes.DOUBLE()))))
-                        .column("piArray", DataTypes.of(DenseVectorTypeInfo.INSTANCE))
-                        .column("labels", DataTypes.of(DenseVectorTypeInfo.INSTANCE))
-                        .build();
+        AlgorithmFlow algorithmFlow =
+                new AlgorithmFlow()
+                        .add(
+                                new MLDataFunction(
+                                                "map",
+                                                (MapFunction<Row, Tuple2<Vector, Double>>)
+                                                        row -> {
+                                                            Number number =
+                                                                    (Number) row.getField(labelCol);
+                                                            Preconditions.checkNotNull(
+                                                                    number,
+                                                                    "Input data should contain label value.");
+                                                            Preconditions.checkArgument(
+                                                                    number.intValue()
+                                                                            == number.doubleValue(),
+                                                                    "Label value should be indexed number.");
+                                                            return new Tuple2<>(
+                                                                    (Vector)
+                                                                            row.getField(
+                                                                                    featuresCol),
+                                                                    number.doubleValue());
+                                                        })
+                                        .returns(
+                                                Types.TUPLE(VectorTypeInfo.INSTANCE, Types.DOUBLE)))
+                        .add(new MLDataFunction("flatMap", new ExtractFeatureFunction()))
+                        .add(
+                                new MLDataFunction(
+                                        "keyBy",
+                                        (KeySelector<Tuple3<Double, Integer, Double>, Integer>)
+                                                value -> value.f1))
+                        .add(
+                                new MLDataFunction(
+                                                "mapPartition",
+                                                new GenerateFeatureWeightMapFunction())
+                                        .returns(
+                                                Types.TUPLE(
+                                                        Types.DOUBLE,
+                                                        Types.INT,
+                                                        Types.MAP(Types.DOUBLE, Types.DOUBLE),
+                                                        Types.INT)))
+                        .add(
+                                new MLDataFunction(
+                                        "keyBy",
+                                        (KeySelector<
+                                                        Tuple4<
+                                                                Double,
+                                                                Integer,
+                                                                Map<Double, Double>,
+                                                                Integer>,
+                                                        Double>)
+                                                value -> value.f0))
+                        .add(
+                                new MLDataFunction("mapPartition", new AggregateIntoArrayFunction())
+                                        .returns(
+                                                Types.TUPLE(
+                                                        Types.DOUBLE,
+                                                        Types.INT,
+                                                        Types.OBJECT_ARRAY(
+                                                                Types.MAP(
+                                                                        Types.DOUBLE,
+                                                                        Types.DOUBLE)))))
+                        .add(
+                                new MLDataFunction(
+                                                "mapPartition",
+                                                new GenerateModelFunction(smoothing))
+                                        .withParallel(1)
+                                        .returns(NaiveBayesModelData.TYPE_INFO));
 
         NaiveBayesModel model =
-                new NaiveBayesModel().setModelData(tEnv.fromDataStream(modelData, schema));
+                new NaiveBayesModel().setModelData(algorithmFlow.apply(mlData).getTable());
         ParamUtils.updateExistingParams(model, paramMap);
         return model;
     }

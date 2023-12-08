@@ -120,16 +120,21 @@ class BoostIterationBody implements IterationBody {
 
         // Evaluation with training data
         final String labelCol = "label";
+        final String weightCol = "weight";
         final String probCol = "prob";
-        GetLabelPredOperator getLabelPredOp = new GetLabelPredOperator(labelCol, probCol, 10);
+        GetLabelPredOperator getLabelPredOp =
+                new GetLabelPredOperator(labelCol, probCol, weightCol, 10);
         DataStream<Row> trainLabelPred =
                 updatedModelData.transform(
                         "GetTrainLabelPred",
                         Types.ROW_NAMED(
-                                new String[] {labelCol, probCol}, Types.DOUBLE, Types.DOUBLE),
+                                new String[] {labelCol, probCol, weightCol},
+                                Types.DOUBLE,
+                                Types.DOUBLE,
+                                Types.DOUBLE),
                         getLabelPredOp);
         DataStream<Row> trainEvalResults =
-                EvalIterationUtils.eval(trainLabelPred, labelCol, probCol, null);
+                EvalIterationUtils.eval(trainLabelPred, labelCol, probCol, weightCol);
         trainEvalResults =
                 trainEvalResults
                         .broadcast()

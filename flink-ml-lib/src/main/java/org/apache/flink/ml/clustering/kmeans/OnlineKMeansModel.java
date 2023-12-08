@@ -91,7 +91,7 @@ public class OnlineKMeansModel
 
         DataStream<Row> predictionResult =
                 tEnv.toDataStream(inputs[0])
-                        .connect(KMeansModelData.getModelDataStream(modelDataTable).broadcast())
+                        .connect(KMeansModelDataUtil.getModelDataStream(modelDataTable).broadcast())
                         .transform(
                                 "PredictLabelOperator",
                                 outputTypeInfo,

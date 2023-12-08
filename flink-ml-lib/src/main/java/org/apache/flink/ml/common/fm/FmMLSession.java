@@ -55,19 +55,11 @@ public class FmMLSession extends MLSessionImpl<FmSample> {
     /** The batch of training data for computing gradients. */
     public List<FmSample> batchData;
 
-    /** The list of batchData. */
-    public List<List<FmSample>> batchDataList = new ArrayList<>();
-
-    /** Processing batch index in current iteration. */
-    public int currentIndex;
-
     private ListState<FmSample> batchDataState;
     /** Global batch size. */
     private final int globalBatchSize;
     /** The local batch size. */
     private int localBatchSize;
-
-    private boolean hugeDataMode = true;
 
     public FmMLSession(int globalBatchSize) {
         this(globalBatchSize, null);
@@ -91,6 +83,7 @@ public class FmMLSession extends MLSessionImpl<FmSample> {
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public void initializeState(StateInitializationContext context) throws Exception {
         batchDataState =
                 context.getOperatorStateStore()
@@ -127,35 +120,6 @@ public class FmMLSession extends MLSessionImpl<FmSample> {
         lossState.add(localLoss[1]);
         lossState.add(globalLoss[0]);
         lossState.add(globalLoss[1]);
-    }
-
-    /** Gets the next batch of training data. */
-    public void getNextBatchData() throws IOException {
-        if (hugeDataMode) {
-            readInNextBatchData();
-        } else {
-            if (!isInitialized) {
-                initializeBatchData();
-                isInitialized = true;
-            }
-            this.batchData = batchDataList.get(currentIndex % batchDataList.size());
-            currentIndex++;
-        }
-    }
-
-    public void initializeBatchData() {
-        while (inputData.hasNext()) {
-            List<FmSample> currentBatchData = new ArrayList<>(localBatchSize);
-            int i = 0;
-            while (i < localBatchSize && inputData.hasNext()) {
-                currentBatchData.add(inputData.next());
-                i++;
-            }
-            batchDataList.add(currentBatchData);
-        }
-
-        localLoss[2] = batchDataList.size() * 1.;
-        currentIndex = 0;
     }
 
     /** Reads in next batch of training data. */

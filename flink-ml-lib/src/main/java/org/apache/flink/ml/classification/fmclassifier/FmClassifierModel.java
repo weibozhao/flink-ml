@@ -24,27 +24,27 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.ml.api.Model;
-import org.apache.flink.ml.common.broadcast.BroadcastUtils;
 import org.apache.flink.ml.common.datastream.TableUtils;
 import org.apache.flink.ml.common.fm.FmModelData;
 import org.apache.flink.ml.common.fm.FmModelDataUtil;
 import org.apache.flink.ml.common.fm.FmModelServable;
+import org.apache.flink.ml.common.ps.api.AlgorithmFlow;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
+import org.apache.flink.ml.common.ps.api.ModelParseComponent;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.commons.lang3.ArrayUtils;
 
 import java.io.IOException;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -65,12 +65,10 @@ public class FmClassifierModel
     @SuppressWarnings("unchecked")
     public Table[] transform(Table... inputs) {
         Preconditions.checkArgument(inputs.length == 1);
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
-        DataStream<Row> inputStream = tEnv.toDataStream(inputs[0]);
-        final String broadcastModelKey = "broadcastModelKey";
-        DataStream<FmModelData> modelDataStream =
-                FmModelDataUtil.getModelDataStream(modelDataTable);
+
+        MLData mlData =
+                MLData.of(new Table[] {inputs[0], modelDataTable}, new String[] {"data", "model"});
+
         RowTypeInfo inputTypeInfo = TableUtils.getRowTypeInfo(inputs[0].getResolvedSchema());
         RowTypeInfo outputTypeInfo =
                 new RowTypeInfo(
@@ -82,17 +80,16 @@ public class FmClassifierModel
                                 inputTypeInfo.getFieldNames(),
                                 getPredictionCol(),
                                 getRawPredictionCol()));
-        DataStream<Row> predictionResult =
-                BroadcastUtils.withBroadcastStream(
-                        Collections.singletonList(inputStream),
-                        Collections.singletonMap(broadcastModelKey, modelDataStream),
-                        inputList -> {
-                            DataStream<Row> inputData = (DataStream<Row>) inputList.get(0);
-                            return inputData.map(
-                                    new PredictLabelFunction(broadcastModelKey, paramMap),
-                                    outputTypeInfo);
-                        });
-        return new Table[] {tEnv.fromDataStream(predictionResult)};
+
+        AlgorithmFlow flow =
+                new AlgorithmFlow()
+                        .add(new ModelParseComponent<>("model", FmModelData.class))
+                        .add(
+                                new MLDataFunction(
+                                                "map", new PredictLabelFunction("model", paramMap))
+                                        .withBroadcast("model")
+                                        .returns(outputTypeInfo));
+        return flow.apply(mlData).slice("data").getTables();
     }
 
     @Override

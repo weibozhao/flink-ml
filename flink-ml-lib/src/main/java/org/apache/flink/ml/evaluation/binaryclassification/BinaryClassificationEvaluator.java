@@ -20,8 +20,6 @@ package org.apache.flink.ml.evaluation.binaryclassification;
 
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.MapPartitionFunction;
-import org.apache.flink.api.common.functions.ReduceFunction;
-import org.apache.flink.api.common.functions.RichFlatMapFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.functions.RichMapPartitionFunction;
 import org.apache.flink.api.common.state.ListState;
@@ -33,23 +31,21 @@ import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.iteration.operator.OperatorStateUtils;
 import org.apache.flink.ml.api.AlgoOperator;
-import org.apache.flink.ml.common.broadcast.BroadcastUtils;
-import org.apache.flink.ml.common.datastream.DataStreamUtils;
 import org.apache.flink.ml.common.datastream.purefunc.MapWithBcPureFunc;
+import org.apache.flink.ml.common.ps.api.AlgorithmFlow;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
+import org.apache.flink.ml.common.ps.api.PartitionCustomComponent;
+import org.apache.flink.ml.common.ps.api.TransformComponent;
 import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
-import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
-import org.apache.flink.streaming.api.operators.BoundedOneInput;
-import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
@@ -61,11 +57,9 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -89,222 +83,120 @@ public class BinaryClassificationEvaluator
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public Table[] transform(Table... inputs) {
+        final String dataName = "data";
+        final String boundaryRangeName = "boundaryRange";
+        final String partitionSummariesName = "partitionSummaries";
+
         Preconditions.checkArgument(inputs.length == 1);
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
-        DataStream<Tuple3<Double, Boolean, Double>> evalData =
-                tEnv.toDataStream(inputs[0])
-                        .map(new ParseSample(getLabelCol(), getRawPredictionCol(), getWeightCol()));
-        final String boundaryRangeKey = "boundaryRange";
-        final String partitionSummariesKey = "partitionSummaries";
-
-        DataStream<Tuple4<Double, Boolean, Double, Integer>> evalDataWithTaskId =
-                BroadcastUtils.withBroadcastStream(
-                        Collections.singletonList(evalData),
-                        Collections.singletonMap(boundaryRangeKey, getBoundaryRange(evalData)),
-                        inputList -> {
-                            DataStream input = inputList.get(0);
-                            return input.map(new AppendTaskId(boundaryRangeKey));
-                        });
-
-        /* Repartition the evaluated data by range. */
-        evalDataWithTaskId =
-                evalDataWithTaskId.partitionCustom((chunkId, numPartitions) -> chunkId, x -> x.f3);
-
-        /* Sorts local data by score.*/
-        DataStream<Tuple3<Double, Boolean, Double>> sortEvalData =
-                DataStreamUtils.mapPartition(
-                        evalDataWithTaskId,
-                        new MapPartitionFunction<
-                                Tuple4<Double, Boolean, Double, Integer>,
-                                Tuple3<Double, Boolean, Double>>() {
-                            @Override
-                            public void mapPartition(
-                                    Iterable<Tuple4<Double, Boolean, Double, Integer>> values,
-                                    Collector<Tuple3<Double, Boolean, Double>> out) {
-                                List<Tuple3<Double, Boolean, Double>> bufferedData =
-                                        new LinkedList<>();
-                                for (Tuple4<Double, Boolean, Double, Integer> t4 : values) {
-                                    bufferedData.add(Tuple3.of(t4.f0, t4.f1, t4.f2));
-                                }
-                                bufferedData.sort(Comparator.comparingDouble(o -> -o.f0));
-                                for (Tuple3<Double, Boolean, Double> dataPoint : bufferedData) {
-                                    out.collect(dataPoint);
-                                }
-                            }
-                        });
-
-        /* Calculates the summary of local data. */
-        DataStream<BinarySummary> partitionSummaries =
-                sortEvalData.transform(
-                        "reduceInEachPartition",
-                        TypeInformation.of(BinarySummary.class),
-                        new PartitionSummaryOperator());
-
-        /* Sorts global data. Output Tuple4 : <score, order, isPositive, weight>. */
-        DataStream<Tuple4<Double, Long, Boolean, Double>> dataWithOrders =
-                BroadcastUtils.withBroadcastStream(
-                        Collections.singletonList(sortEvalData),
-                        Collections.singletonMap(partitionSummariesKey, partitionSummaries),
-                        inputList -> {
-                            DataStream input = inputList.get(0);
-                            return input.flatMap(new CalcSampleOrders(partitionSummariesKey));
-                        });
-
-        DataStream<double[]> localAreaUnderROCVariable =
-                dataWithOrders.transform(
-                        "AccumulateMultiScore",
-                        TypeInformation.of(double[].class),
-                        new AccumulateMultiScoreOperator());
-
-        DataStream<double[]> middleAreaUnderROC =
-                DataStreamUtils.reduce(
-                        localAreaUnderROCVariable,
-                        (ReduceFunction<double[]>)
-                                (t1, t2) -> {
-                                    t2[0] += t1[0];
-                                    t2[1] += t1[1];
-                                    t2[2] += t1[2];
-                                    return t2;
-                                });
-
-        DataStream<Double> areaUnderROC =
-                middleAreaUnderROC.map(
-                        (MapFunction<double[], Double>)
-                                value -> {
-                                    if (value[1] > 0 && value[2] > 0) {
-                                        return (value[0] - 1. * value[1] * (value[1] + 1) / 2)
-                                                / (value[1] * value[2]);
-                                    } else {
-                                        return Double.NaN;
-                                    }
-                                });
-
-        Map<String, DataStream<?>> broadcastMap = new HashMap<>();
-        broadcastMap.put(partitionSummariesKey, partitionSummaries);
-        broadcastMap.put(AREA_UNDER_ROC, areaUnderROC);
-        DataStream<BinaryMetrics> localMetrics =
-                BroadcastUtils.withBroadcastStream(
-                        Collections.singletonList(sortEvalData),
-                        broadcastMap,
-                        inputList -> {
-                            DataStream input = inputList.get(0);
-                            return DataStreamUtils.mapPartition(
-                                    input, new CalcBinaryMetrics(partitionSummariesKey));
-                        });
-
-        DataStream<Map<String, Double>> metrics =
-                DataStreamUtils.mapPartition(
-                        localMetrics, new MergeMetrics(), Types.MAP(Types.STRING, Types.DOUBLE));
-        metrics.getTransformation().setParallelism(1);
-
         final String[] metricsNames = getMetricsNames();
         TypeInformation<?>[] metricTypes = new TypeInformation[metricsNames.length];
         Arrays.fill(metricTypes, Types.DOUBLE);
         RowTypeInfo outputTypeInfo = new RowTypeInfo(metricTypes, metricsNames);
 
-        DataStream<Row> evalResult =
-                metrics.map(
-                        (MapFunction<Map<String, Double>, Row>)
-                                value -> {
-                                    Row ret = new Row(metricsNames.length);
-                                    for (int i = 0; i < metricsNames.length; ++i) {
-                                        ret.setField(i, value.get(metricsNames[i]));
-                                    }
-                                    return ret;
-                                },
-                        outputTypeInfo);
-        return new Table[] {tEnv.fromDataStream(evalResult)};
+        MLData mlData = MLData.of(inputs, new String[] {dataName});
+        int parallel = mlData.getExecutionEnvironment().getParallelism();
+
+        AlgorithmFlow algorithmFlow =
+                new AlgorithmFlow()
+                        .add(
+                                new MLDataFunction(
+                                        "map",
+                                        new ParseSample(
+                                                getLabelCol(),
+                                                getRawPredictionCol(),
+                                                getWeightCol())))
+                        .add(
+                                new MLDataFunction("mapPartition", new SampleScoreFunction())
+                                        .input(dataName)
+                                        .output(boundaryRangeName))
+                        .add(
+                                new MLDataFunction(
+                                                "mapPartition",
+                                                new CalcBoundaryRangeFunction(parallel))
+                                        .withParallel(1))
+                        .add(
+                                new MLDataFunction("map", new AppendTaskId(boundaryRangeName))
+                                        .withBroadcast(boundaryRangeName)
+                                        .input(dataName)
+                                        .output(dataName))
+                        .add(new PartitionCustomData())
+                        .add(new MLDataFunction("mapPartition", new SortData()))
+                        .add(
+                                new PartitionSummary()
+                                        .returns(TypeInformation.of(BinarySummary.class))
+                                        .output(partitionSummariesName))
+                        .add(
+                                new MLDataFunction(
+                                                "mapPartition",
+                                                new CalcBinaryMetrics(partitionSummariesName))
+                                        .withBroadcast(partitionSummariesName)
+                                        .input(dataName)
+                                        .output(dataName))
+                        .add(
+                                new MLDataFunction("mapPartition", new MergeMetrics())
+                                        .withParallel(1)
+                                        .returns(Types.MAP(Types.STRING, Types.DOUBLE)))
+                        .add(
+                                new MLDataFunction("map", new GenMetric(metricsNames))
+                                        .withParallel(1)
+                                        .returns(outputTypeInfo));
+        return algorithmFlow.apply(mlData).slice("data").getTables();
     }
 
-    /** Updates variables for calculating AreaUnderROC. */
-    private static class AccumulateMultiScoreOperator extends AbstractStreamOperator<double[]>
-            implements OneInputStreamOperator<Tuple4<Double, Long, Boolean, Double>, double[]>,
-                    BoundedOneInput {
-        private ListState<double[]> accValueState;
-        private ListState<Double> scoreState;
+    /** Comments. */
+    public static class GenMetric implements MapFunction<Map<String, Double>, Row> {
+        private final String[] metricsNames;
 
-        double[] accValue;
-        double score;
-
-        @Override
-        public void endInput() {
-            if (accValue != null) {
-                output.collect(
-                        new StreamRecord<>(
-                                new double[] {
-                                    accValue[0] / accValue[1] * accValue[2],
-                                    accValue[2],
-                                    accValue[3]
-                                }));
-            }
+        public GenMetric(String[] metricsNames) {
+            this.metricsNames = metricsNames;
         }
 
         @Override
-        public void processElement(
-                StreamRecord<Tuple4<Double, Long, Boolean, Double>> streamRecord) {
-            Tuple4<Double, Long, Boolean, Double> t = streamRecord.getValue();
-            if (accValue == null) {
-                accValue = new double[4];
-                score = t.f0;
-            } else if (score != t.f0) {
-                output.collect(
-                        new StreamRecord<>(
-                                new double[] {
-                                    accValue[0] / accValue[1] * accValue[2],
-                                    accValue[2],
-                                    accValue[3]
-                                }));
-                Arrays.fill(accValue, 0.0);
+        public Row map(Map<String, Double> value) {
+            Row ret = new Row(metricsNames.length);
+            for (int i = 0; i < metricsNames.length; ++i) {
+                ret.setField(i, value.get(metricsNames[i]));
             }
-            accValue[0] += t.f1;
-            accValue[1] += 1.0;
-            if (t.f2) {
-                accValue[2] += t.f3;
-            } else {
-                accValue[3] += t.f3;
+            return ret;
+        }
+    }
+
+    /** Comments. */
+    public static class SortData
+            implements MapPartitionFunction<
+                    Tuple4<Double, Boolean, Double, Integer>, Tuple3<Double, Boolean, Double>> {
+        @Override
+        public void mapPartition(
+                Iterable<Tuple4<Double, Boolean, Double, Integer>> values,
+                Collector<Tuple3<Double, Boolean, Double>> out) {
+            List<Tuple3<Double, Boolean, Double>> bufferedData = new ArrayList<>();
+            for (Tuple4<Double, Boolean, Double, Integer> t4 : values) {
+                bufferedData.add(Tuple3.of(t4.f0, t4.f1, t4.f2));
             }
-        }
-
-        @Override
-        @SuppressWarnings("unchecked")
-        public void initializeState(StateInitializationContext context) throws Exception {
-            super.initializeState(context);
-            accValueState =
-                    context.getOperatorStateStore()
-                            .getListState(
-                                    new ListStateDescriptor<>(
-                                            "accValueState", TypeInformation.of(double[].class)));
-            accValue =
-                    OperatorStateUtils.getUniqueElement(accValueState, "accValueState")
-                            .orElse(null);
-
-            scoreState =
-                    context.getOperatorStateStore()
-                            .getListState(
-                                    new ListStateDescriptor<>(
-                                            "scoreState", TypeInformation.of(Double.class)));
-            score = OperatorStateUtils.getUniqueElement(scoreState, "scoreState").orElse(0.0);
-        }
-
-        @Override
-        @SuppressWarnings("unchecked")
-        public void snapshotState(StateSnapshotContext context) throws Exception {
-            super.snapshotState(context);
-            accValueState.clear();
-            scoreState.clear();
-            if (accValue != null) {
-                accValueState.add(accValue);
-                scoreState.add(score);
+            bufferedData.sort(Comparator.comparingDouble(o -> -o.f0));
+            for (Tuple3<Double, Boolean, Double> dataPoint : bufferedData) {
+                out.collect(dataPoint);
             }
         }
     }
 
-    private static class PartitionSummaryOperator extends AbstractStreamOperator<BinarySummary>
-            implements OneInputStreamOperator<Tuple3<Double, Boolean, Double>, BinarySummary>,
-                    BoundedOneInput {
+    /** Comments. */
+    public static class PartitionCustomData
+            extends PartitionCustomComponent<Tuple4<Double, Boolean, Double, Integer>, Integer> {
+        @Override
+        public int partition(Integer integer, int i) {
+            return integer;
+        }
+
+        @Override
+        public Integer getKey(Tuple4<Double, Boolean, Double, Integer> value) {
+            return value.f3;
+        }
+    }
+
+    private static class PartitionSummary
+            extends TransformComponent<Tuple3<Double, Boolean, Double>, BinarySummary> {
         private ListState<BinarySummary> summaryState;
         private BinarySummary summary;
 
@@ -321,7 +213,6 @@ public class BinaryClassificationEvaluator
         }
 
         @Override
-        @SuppressWarnings("unchecked")
         public void initializeState(StateInitializationContext context) throws Exception {
             super.initializeState(context);
             summaryState =
@@ -341,7 +232,6 @@ public class BinaryClassificationEvaluator
         }
 
         @Override
-        @SuppressWarnings("unchecked")
         public void snapshotState(StateSnapshotContext context) throws Exception {
             super.snapshotState(context);
             summaryState.clear();
@@ -386,24 +276,24 @@ public class BinaryClassificationEvaluator
 
             List<BinarySummary> statistics =
                     getRuntimeContext().getBroadcastVariable(partitionSummariesKey);
-            long[] countValues =
+            double[] accWeights =
                     reduceBinarySummary(statistics, getRuntimeContext().getIndexOfThisSubtask());
 
-            double areaUnderROC =
-                    getRuntimeContext().<Double>getBroadcastVariable(AREA_UNDER_ROC).get(0);
-            long totalTrue = countValues[2];
-            long totalFalse = countValues[3];
-            if (totalTrue == 0) {
-                LOG.warn("There is no positive sample in data!");
+            double totalSumWeightsPos = accWeights[2];
+            double totalSumWeightsNeg = accWeights[3];
+            if (totalSumWeightsPos == 0) {
+                LOG.warn("There is no positive samples in data!");
             }
-            if (totalFalse == 0) {
-                LOG.warn("There is no negative sample in data!");
+            if (totalSumWeightsNeg == 0) {
+                LOG.warn("There is no negative samples in data!");
             }
 
-            BinaryMetrics metrics = new BinaryMetrics(0L, areaUnderROC);
+            BinaryMetrics metrics = new BinaryMetrics(0);
+            // Stores values of TPR, FPR, Precision, and PR calculated from samples with scores
+            // ranging from the maximum to the current one.
             double[] tprFprPrecision = new double[4];
             for (Tuple3<Double, Boolean, Double> t3 : iterable) {
-                updateBinaryMetrics(t3, metrics, countValues, tprFprPrecision);
+                updateBinaryMetrics(t3, metrics, accWeights, tprFprPrecision);
             }
             collector.collect(metrics);
         }
@@ -412,35 +302,36 @@ public class BinaryClassificationEvaluator
     private static void updateBinaryMetrics(
             Tuple3<Double, Boolean, Double> cur,
             BinaryMetrics binaryMetrics,
-            long[] countValues,
+            double[] accWeights,
             double[] recordValues) {
-        if (binaryMetrics.count == 0) {
-            recordValues[0] = countValues[2] == 0 ? 1.0 : 1.0 * countValues[0] / countValues[2];
-            recordValues[1] = countValues[3] == 0 ? 1.0 : 1.0 * countValues[1] / countValues[3];
+        if (binaryMetrics.sumWeights == 0) {
+            recordValues[0] = accWeights[2] == 0 ? 1.0 : accWeights[0] / accWeights[2];
+            recordValues[1] = accWeights[3] == 0 ? 1.0 : accWeights[1] / accWeights[3];
             recordValues[2] =
-                    countValues[0] + countValues[1] == 0
+                    accWeights[0] + accWeights[1] == 0
                             ? 1.0
-                            : 1.0 * countValues[0] / (countValues[0] + countValues[1]);
-            recordValues[3] =
-                    1.0 * (countValues[0] + countValues[1]) / (countValues[2] + countValues[3]);
+                            : accWeights[0] / (accWeights[0] + accWeights[1]);
+            recordValues[3] = (accWeights[0] + accWeights[1]) / (accWeights[2] + accWeights[3]);
         }
 
-        binaryMetrics.count++;
-        if (cur.f1) {
-            countValues[0]++;
+        boolean isPos = cur.f1;
+        double weight = cur.f2;
+        binaryMetrics.sumWeights += weight;
+        if (isPos) {
+            accWeights[0] += weight;
         } else {
-            countValues[1]++;
+            accWeights[1] += weight;
         }
 
-        double tpr = countValues[2] == 0 ? 1.0 : 1.0 * countValues[0] / countValues[2];
-        double fpr = countValues[3] == 0 ? 1.0 : 1.0 * countValues[1] / countValues[3];
+        double tpr = accWeights[2] == 0 ? 1.0 : accWeights[0] / accWeights[2];
+        double fpr = accWeights[3] == 0 ? 1.0 : accWeights[1] / accWeights[3];
         double precision =
-                countValues[0] + countValues[1] == 0
+                accWeights[0] + accWeights[1] == 0
                         ? 1.0
-                        : 1.0 * countValues[0] / (countValues[0] + countValues[1]);
-        double positiveRate =
-                1.0 * (countValues[0] + countValues[1]) / (countValues[2] + countValues[3]);
+                        : accWeights[0] / (accWeights[0] + accWeights[1]);
+        double positiveRate = (accWeights[0] + accWeights[1]) / (accWeights[2] + accWeights[3]);
 
+        binaryMetrics.areaUnderROC += (fpr - recordValues[1]) * (tpr + recordValues[0]) / 2;
         binaryMetrics.areaUnderLorenz +=
                 ((positiveRate - recordValues[3]) * (tpr + recordValues[0]) / 2);
         binaryMetrics.areaUnderPR += ((tpr - recordValues[0]) * (precision + recordValues[2]) / 2);
@@ -453,64 +344,30 @@ public class BinaryClassificationEvaluator
     }
 
     /**
-     * For each sample, calculates its score order among all samples. The sample with minimum score
-     * has order 1, while the sample with maximum score has order samples.
-     *
-     * <p>Input is a dataset of tuple (score, is real positive, weight), output is a dataset of
-     * tuple (score, order, is real positive, weight).
-     */
-    private static class CalcSampleOrders
-            extends RichFlatMapFunction<
-                    Tuple3<Double, Boolean, Double>, Tuple4<Double, Long, Boolean, Double>> {
-        private long startIndex;
-        private long total = -1;
-        private final String partitionSummariesKey;
-
-        public CalcSampleOrders(String partitionSummariesKey) {
-            this.partitionSummariesKey = partitionSummariesKey;
-        }
-
-        @Override
-        public void flatMap(
-                Tuple3<Double, Boolean, Double> value,
-                Collector<Tuple4<Double, Long, Boolean, Double>> out)
-                throws Exception {
-            if (total == -1) {
-                List<BinarySummary> statistics =
-                        getRuntimeContext().getBroadcastVariable(partitionSummariesKey);
-                long[] countValues =
-                        reduceBinarySummary(
-                                statistics, getRuntimeContext().getIndexOfThisSubtask());
-                startIndex = countValues[1] + countValues[0] + 1;
-                total = countValues[2] + countValues[3];
-            }
-            out.collect(Tuple4.of(value.f0, total - startIndex + 1, value.f1, value.f2));
-            startIndex++;
-        }
-    }
-
-    /**
      * @param values Reduce Summary of all workers.
      * @param taskId current taskId.
-     * @return [curTrue, curFalse, TotalTrue, TotalFalse]
+     * @return An array storing sum of weights of positives/negatives of tasks before the current
+     *     one, and sum of weights of positives/negatives of all tasks.
      */
-    static long[] reduceBinarySummary(List<BinarySummary> values, int taskId) {
+    static double[] reduceBinarySummary(List<BinarySummary> values, int taskId) {
         List<BinarySummary> list = new ArrayList<>(values);
         list.sort(Comparator.comparingDouble(t -> -t.maxScore));
-        long curTrue = 0;
-        long curFalse = 0;
-        long totalTrue = 0;
-        long totalFalse = 0;
+        double prefixSumWeightsPos = 0;
+        double prefixSumWeightsNeg = 0;
+        double totalSumWeightsPos = 0;
+        double totalSumWeightsNeg = 0;
 
         for (BinarySummary statistics : list) {
             if (statistics.taskId == taskId) {
-                curFalse = totalFalse;
-                curTrue = totalTrue;
+                prefixSumWeightsNeg = totalSumWeightsNeg;
+                prefixSumWeightsPos = totalSumWeightsPos;
             }
-            totalTrue += statistics.curPositive;
-            totalFalse += statistics.curNegative;
+            totalSumWeightsPos += statistics.sumWeightsPos;
+            totalSumWeightsNeg += statistics.sumWeightsNeg;
         }
-        return new long[] {curTrue, curFalse, totalTrue, totalFalse};
+        return new double[] {
+            prefixSumWeightsPos, prefixSumWeightsNeg, totalSumWeightsPos, totalSumWeightsNeg
+        };
     }
 
     /**
@@ -521,13 +378,16 @@ public class BinaryClassificationEvaluator
      */
     static void updateBinarySummary(
             BinarySummary statistics, Tuple3<Double, Boolean, Double> evalElement) {
-        if (evalElement.f1) {
-            statistics.curPositive++;
+        boolean isPos = evalElement.f1;
+        double weight = evalElement.f2;
+        double score = evalElement.f0;
+        if (isPos) {
+            statistics.sumWeightsPos += weight;
         } else {
-            statistics.curNegative++;
+            statistics.sumWeightsNeg += weight;
         }
-        if (Double.compare(statistics.maxScore, evalElement.f0) < 0) {
-            statistics.maxScore = evalElement.f0;
+        if (Double.compare(statistics.maxScore, score) < 0) {
+            statistics.maxScore = score;
         }
     }
 
@@ -556,12 +416,12 @@ public class BinaryClassificationEvaluator
     public static class AppendTaskId
             extends RichMapFunction<
                     Tuple3<Double, Boolean, Double>, Tuple4<Double, Boolean, Double, Integer>> {
-        private final String boundaryRangeKey;
+        private final String boundaryRangeName;
         private double[] boundaryRange;
         private transient AppendTaskIdPureFunc func;
 
-        public AppendTaskId(String boundaryRangeKey) {
-            this.boundaryRangeKey = boundaryRangeKey;
+        public AppendTaskId(String boundaryRangeName) {
+            this.boundaryRangeName = boundaryRangeName;
         }
 
         @Override
@@ -570,7 +430,7 @@ public class BinaryClassificationEvaluator
             if (boundaryRange == null) {
                 boundaryRange =
                         (double[])
-                                getRuntimeContext().getBroadcastVariable(boundaryRangeKey).get(0);
+                                getRuntimeContext().getBroadcastVariable(boundaryRangeName).get(0);
                 func = new AppendTaskIdPureFunc();
             }
             return func.map(value, boundaryRange);
@@ -608,10 +468,8 @@ public class BinaryClassificationEvaluator
             Arrays.fill(sampleScores, Double.MAX_VALUE);
             Random rand = new Random();
             int sampleNum = bufferedDataPoints.size();
-            if (sampleNum > 0) {
-                for (int i = 0; i < NUM_SAMPLE_FOR_RANGE_PARTITION; ++i) {
-                    sampleScores[i] = bufferedDataPoints.get(rand.nextInt(sampleNum));
-                }
+            for (int i = 0; i < NUM_SAMPLE_FOR_RANGE_PARTITION; ++i) {
+                sampleScores[i] = bufferedDataPoints.get(rand.nextInt(sampleNum));
             }
             out.collect(sampleScores);
         }
@@ -646,25 +504,6 @@ public class BinaryClassificationEvaluator
         }
     }
 
-    /**
-     * Calculates boundary range for rangePartition.
-     *
-     * @param evalData Evaluate data.
-     * @return Boundary range.
-     */
-    private static DataStream<double[]> getBoundaryRange(
-            DataStream<Tuple3<Double, Boolean, Double>> evalData) {
-        DataStream<double[]> sampleScoreStream =
-                DataStreamUtils.mapPartition(evalData, new SampleScoreFunction());
-        final int parallel = sampleScoreStream.getParallelism();
-
-        DataStream<double[]> boundaryRange =
-                DataStreamUtils.mapPartition(
-                        sampleScoreStream, new CalcBoundaryRangeFunction(parallel));
-        boundaryRange.getTransformation().setParallelism(1);
-        return boundaryRange;
-    }
-
     static class ParseSample implements MapFunction<Row, Tuple3<Double, Boolean, Double>> {
         private final String labelCol;
         private final String rawPredictionCol;
@@ -695,25 +534,26 @@ public class BinaryClassificationEvaluator
         public Integer taskId;
         // maximum score in this partition
         public double maxScore;
-        // real positives in this partition
-        public long curPositive;
-        // real negatives in this partition
-        public long curNegative;
+        // sum of weights of positives in this partition
+        public double sumWeightsPos;
+        // sum of weights of negatives in this partition
+        public double sumWeightsNeg;
 
         public BinarySummary() {}
 
-        public BinarySummary(Integer taskId, double maxScore, long curPositive, long curNegative) {
+        public BinarySummary(
+                Integer taskId, double maxScore, double sumWeightsPos, double sumWeightsNeg) {
             this.taskId = taskId;
             this.maxScore = maxScore;
-            this.curPositive = curPositive;
-            this.curNegative = curNegative;
+            this.sumWeightsPos = sumWeightsPos;
+            this.sumWeightsNeg = sumWeightsNeg;
         }
     }
 
     /** The evaluation metrics for binary classification. */
     public static class BinaryMetrics {
-        /* The count of samples. */
-        public long count;
+        /* The sum of weights of samples. */
+        public double sumWeights;
 
         /* Area under ROC */
         public double areaUnderROC;
@@ -729,22 +569,19 @@ public class BinaryClassificationEvaluator
 
         public BinaryMetrics() {}
 
-        public BinaryMetrics(long count, double areaUnderROC) {
-            this.count = count;
-            this.areaUnderROC = areaUnderROC;
+        public BinaryMetrics(long sumWeights) {
+            this.sumWeights = sumWeights;
         }
 
         public BinaryMetrics merge(BinaryMetrics binaryClassMetrics) {
             if (null == binaryClassMetrics) {
                 return this;
             }
-            Preconditions.checkState(
-                    Double.compare(areaUnderROC, binaryClassMetrics.areaUnderROC) == 0,
-                    "AreaUnderROC not equal!");
-            count += binaryClassMetrics.count;
-            ks = Math.max(ks, binaryClassMetrics.ks);
-            areaUnderPR += binaryClassMetrics.areaUnderPR;
+            sumWeights += binaryClassMetrics.sumWeights;
+            areaUnderROC += binaryClassMetrics.areaUnderROC;
             areaUnderLorenz += binaryClassMetrics.areaUnderLorenz;
+            areaUnderPR += binaryClassMetrics.areaUnderPR;
+            ks = Math.max(ks, binaryClassMetrics.ks);
             return this;
         }
     }

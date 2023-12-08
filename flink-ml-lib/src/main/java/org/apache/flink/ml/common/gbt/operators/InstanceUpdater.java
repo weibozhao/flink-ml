@@ -59,9 +59,10 @@ class InstanceUpdater {
             pgh = new double[instances.length * 3];
             for (int i = 0; i < instances.length; i += 1) {
                 double label = instances[i].label;
+                double weight = instances[i].weight;
                 pgh[3 * i] = prior;
-                pgh[3 * i + 1] = loss.gradient(prior, label);
-                pgh[3 * i + 2] = loss.hessian(prior, label);
+                pgh[3 * i + 1] = loss.gradient(prior, label) * weight;
+                pgh[3 * i + 2] = loss.hessian(prior, label) * weight;
             }
         }
 
@@ -70,11 +71,15 @@ class InstanceUpdater {
             double pred = split.prediction * stepSize;
             for (int i = nodeInfo.slice.start; i < nodeInfo.slice.end; ++i) {
                 int instanceId = indices[i];
-                updatePgh(instanceId, pred, instances[instanceId].label, pgh);
+                double label = instances[instanceId].label;
+                double weight = instances[instanceId].weight;
+                updatePgh(instanceId, pred, label, weight, pgh);
             }
             for (int i = nodeInfo.oob.start; i < nodeInfo.oob.end; ++i) {
                 int instanceId = indices[i];
-                updatePgh(instanceId, pred, instances[instanceId].label, pgh);
+                double label = instances[instanceId].label;
+                double weight = instances[instanceId].weight;
+                updatePgh(instanceId, pred, label, weight, pgh);
             }
         }
         pghSetter.accept(pgh);
@@ -85,9 +90,9 @@ class InstanceUpdater {
                 System.currentTimeMillis() - start);
     }
 
-    private void updatePgh(int instanceId, double pred, double label, double[] pgh) {
+    private void updatePgh(int instanceId, double pred, double label, double weight, double[] pgh) {
         pgh[instanceId * 3] += pred;
-        pgh[instanceId * 3 + 1] = loss.gradient(pgh[instanceId * 3], label);
-        pgh[instanceId * 3 + 2] = loss.hessian(pgh[instanceId * 3], label);
+        pgh[instanceId * 3 + 1] = loss.gradient(pgh[instanceId * 3], label) * weight;
+        pgh[instanceId * 3 + 2] = loss.hessian(pgh[instanceId * 3], label) * weight;
     }
 }

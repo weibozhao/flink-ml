@@ -18,30 +18,30 @@
 
 package org.apache.flink.ml.classification.knn;
 
+import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.ml.api.Model;
-import org.apache.flink.ml.common.broadcast.BroadcastUtils;
 import org.apache.flink.ml.common.datastream.TableUtils;
+import org.apache.flink.ml.common.ps.api.AlgorithmFlow;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
 import org.apache.flink.ml.linalg.BLAS;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.commons.lang3.ArrayUtils;
 
 import java.io.IOException;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
@@ -68,32 +68,42 @@ public class KnnModel implements Model<KnnModel>, KnnModelParams<KnnModel> {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public Table[] transform(Table... inputs) {
         Preconditions.checkArgument(inputs.length == 1);
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
-        DataStream<Row> data = tEnv.toDataStream(inputs[0]);
-        DataStream<KnnModelData> knnModel = KnnModelData.getModelDataStream(modelDataTable);
-        final String broadcastModelKey = "broadcastModelKey";
+
+        MLData mlData =
+                MLData.of(new Table[] {inputs[0], modelDataTable}, new String[] {"data", "model"});
+
         RowTypeInfo inputTypeInfo = TableUtils.getRowTypeInfo(inputs[0].getResolvedSchema());
         RowTypeInfo outputTypeInfo =
                 new RowTypeInfo(
                         ArrayUtils.addAll(
                                 inputTypeInfo.getFieldTypes(), BasicTypeInfo.DOUBLE_TYPE_INFO),
                         ArrayUtils.addAll(inputTypeInfo.getFieldNames(), getPredictionCol()));
-        DataStream<Row> output =
-                BroadcastUtils.withBroadcastStream(
-                        Collections.singletonList(data),
-                        Collections.singletonMap(broadcastModelKey, knnModel),
-                        inputList -> {
-                            DataStream input = inputList.get(0);
-                            return input.map(
-                                    new PredictLabelFunction(
-                                            broadcastModelKey, getK(), getFeaturesCol()),
-                                    outputTypeInfo);
-                        });
-        return new Table[] {tEnv.fromDataStream(output)};
+
+        AlgorithmFlow flow =
+                new AlgorithmFlow()
+                        .add(
+                                new MLDataFunction(
+                                                "map",
+                                                (MapFunction<Row, KnnModelData>)
+                                                        (row ->
+                                                                new KnnModelData(
+                                                                        row.getFieldAs(0),
+                                                                        row.getFieldAs(1),
+                                                                        row.getFieldAs(2))))
+                                        .input("model")
+                                        .output("model"))
+                        .add(
+                                new MLDataFunction(
+                                                "map",
+                                                new PredictLabelFunction(
+                                                        "model", getK(), getFeaturesCol()))
+                                        .withBroadcast("model")
+                                        .input("data")
+                                        .output("data")
+                                        .returns(outputTypeInfo));
+        return flow.apply(mlData).slice("data").getTables();
     }
 
     @Override

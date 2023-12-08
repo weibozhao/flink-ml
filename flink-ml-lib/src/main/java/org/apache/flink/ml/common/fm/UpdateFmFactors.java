@@ -36,8 +36,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Random;
 
-/** Base optimizer. */
-public class UpdateFmFactors implements ModelUpdater<Tuple2<Long, double[]>> {
+/** Updates model data with the average values of local model values. */
+public class UpdateFmFactors implements ModelUpdater<double[]> {
 
     protected Long2ObjectOpenHashMap<double[]> model;
 
@@ -86,8 +86,8 @@ public class UpdateFmFactors implements ModelUpdater<Tuple2<Long, double[]>> {
     }
 
     @Override
-    public Iterator<Tuple2<Long, double[]>> getModelSegments() {
-        List<Tuple2<Long, double[]>> modelSegments = new ArrayList<>();
+    public Iterator<Object> getModelSegments() {
+        List<Object> modelSegments = new ArrayList<>();
         for (Long key : model.keySet()) {
             double[] values = model.get(key.longValue());
             modelSegments.add(Tuple2.of(key, Arrays.copyOfRange(values, 0, factorSize)));

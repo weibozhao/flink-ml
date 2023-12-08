@@ -34,8 +34,8 @@ public abstract class FeatureSplitter {
     protected final FeatureMeta featureMeta;
     protected final BoostingStrategy strategy;
 
-    protected final int minSamplesPerLeaf;
-    protected final double minSampleRatioPerChild;
+    protected final int minInstancesPerNode;
+    protected final double minWeightFractionPerNode;
     protected final double minInfoGain;
 
     public FeatureSplitter(int featureId, FeatureMeta featureMeta, BoostingStrategy strategy) {
@@ -43,9 +43,8 @@ public abstract class FeatureSplitter {
         this.featureId = featureId;
         this.featureMeta = featureMeta;
 
-        this.minSamplesPerLeaf = strategy.minInstancesPerNode;
-        // TODO: not exactly the same since weights are not supported right now.
-        this.minSampleRatioPerChild = strategy.minWeightFractionPerNode;
+        this.minInstancesPerNode = strategy.minInstancesPerNode;
+        this.minWeightFractionPerNode = strategy.minWeightFractionPerNode;
         this.minInfoGain = strategy.minInfoGain;
     }
 

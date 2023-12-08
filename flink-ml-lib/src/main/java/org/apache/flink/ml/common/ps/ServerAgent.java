@@ -21,12 +21,14 @@ package org.apache.flink.ml.common.ps;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.ml.common.ps.sarray.SharedDoubleArray;
+import org.apache.flink.ml.common.ps.sarray.SharedFloatArray;
 import org.apache.flink.ml.common.ps.sarray.SharedLongArray;
 import org.apache.flink.streaming.api.operators.Output;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.util.Preconditions;
 
 import it.unimi.dsi.fastutil.doubles.DoubleArrayList;
+import it.unimi.dsi.fastutil.floats.FloatArrayList;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
 
 import javax.annotation.Nullable;
@@ -93,6 +95,39 @@ class ServerAgent {
         }
     }
 
+    /** Pushes a key-value arrays to servers. */
+    void pushFloat(SharedLongArray keys, SharedFloatArray values, int stageId) {
+        Tuple2<LongArrayList[], FloatArrayList[]> slicedRequests = sliceRequestFloat(keys, values);
+        LongArrayList[] splitKeys = slicedRequests.f0;
+        FloatArrayList[] splitValues = slicedRequests.f1;
+        for (int serverId = 0; serverId < splitKeys.length; serverId++) {
+            Message message =
+                    new Message(
+                            workerId,
+                            serverId,
+                            stageId,
+                            splitKeys[serverId].toLongArray(),
+                            splitValues[serverId].toFloatArray());
+            output.collect(new StreamRecord<>(message.bytes));
+        }
+    }
+
+    /** Pulls the values from servers with the specified keys. */
+    void pullFloat(SharedLongArray keys, int stageId) {
+        Tuple2<LongArrayList[], FloatArrayList[]> slicedRequests = sliceRequestFloat(keys, null);
+        LongArrayList[] splitKeys = slicedRequests.f0;
+        for (int serverId = 0; serverId < splitKeys.length; serverId++) {
+            Message message =
+                    new Message(
+                            workerId,
+                            serverId,
+                            stageId,
+                            splitKeys[serverId].toLongArray(),
+                            new float[0]);
+            output.collect(new StreamRecord<>(message.bytes));
+        }
+    }
+
     /**
      * Pushes the values to servers to apply all-reduce/reduce-scatter operation.
      *
@@ -141,6 +176,36 @@ class ServerAgent {
             if (values != null) {
                 for (int j = 0; j < numDoublesPerKey; j++) {
                     splitValues[serverId].add(values.get(i * numDoublesPerKey + j));
+                }
+            }
+        }
+
+        return Tuple2.of(splitKeys, splitValues);
+    }
+
+    private Tuple2<LongArrayList[], FloatArrayList[]> sliceRequestFloat(
+            SharedLongArray keys, @Nullable SharedFloatArray values) {
+        LongArrayList[] splitKeys = new LongArrayList[numServers];
+        FloatArrayList[] splitValues = new FloatArrayList[numServers];
+        for (int i = 0; i < numServers; i++) {
+            splitKeys[i] = new LongArrayList();
+            splitValues[i] = new FloatArrayList();
+        }
+
+        int numFloatsPerKey = 0;
+        if (values != null) {
+            Preconditions.checkState(
+                    values.size() % keys.size() == 0, "The length of each key should be the same.");
+            numFloatsPerKey = values.size() / keys.size();
+        }
+
+        long[] keyArray = keys.elements();
+        for (int i = 0; i < keys.size(); i++) {
+            int serverId = hashFunc.apply(keyArray[i]);
+            splitKeys[serverId].add(keyArray[i]);
+            if (values != null) {
+                for (int j = 0; j < numFloatsPerKey; j++) {
+                    splitValues[serverId].add(values.get(i * numFloatsPerKey + j));
                 }
             }
         }

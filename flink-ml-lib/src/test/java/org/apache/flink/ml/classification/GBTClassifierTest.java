@@ -201,7 +201,7 @@ public class GBTClassifierTest extends AbstractTestBase {
             DataTypes.DOUBLE,
             DataTypes.DOUBLE,
             DataTypes.DOUBLE,
-            DataTypes.vectorType(BasicType.DOUBLE)
+            DataTypes.VECTOR(BasicType.DOUBLE)
         };
 
         inputTable =
@@ -325,6 +325,68 @@ public class GBTClassifierTest extends AbstractTestBase {
                         $(gbtc.getPredictionCol()),
                         $(gbtc.getRawPredictionCol()),
                         $(gbtc.getProbabilityCol()));
+        verifyPredictionResult(output, outputRows);
+    }
+
+    @Test
+    public void testFitAndPredictWithWeight() throws Exception {
+        GBTClassifier gbtc =
+                new GBTClassifier()
+                        .setFeaturesCols("f0", "f1", "f2")
+                        .setCategoricalCols("f2")
+                        .setWeightCol("weight")
+                        .setLabelCol("cls_label")
+                        .setRegGamma(0.)
+                        .setMaxBins(3)
+                        .setSeed(123);
+        GBTClassifierModel model = gbtc.fit(inputTable);
+        Table output =
+                model.transform(inputTable)[0].select(
+                        $(gbtc.getPredictionCol()),
+                        $(gbtc.getRawPredictionCol()),
+                        $(gbtc.getProbabilityCol()));
+        List<Row> outputRows =
+                Arrays.asList(
+                        Row.of(
+                                0.0,
+                                Vectors.dense(2.0356502589263723, -2.0356502589263723),
+                                Vectors.dense(0.8844896074224147, 0.11551039257758536)),
+                        Row.of(
+                                1.0,
+                                Vectors.dense(-2.3612438726151934, 2.3612438726151934),
+                                Vectors.dense(0.0861761892745041, 0.9138238107254959)),
+                        Row.of(
+                                0.0,
+                                Vectors.dense(2.4502026820123057, -2.4502026820123057),
+                                Vectors.dense(0.9205762712962602, 0.07942372870373977)),
+                        Row.of(
+                                1.0,
+                                Vectors.dense(-2.3301282566306694, 2.3301282566306694),
+                                Vectors.dense(0.08865829982802531, 0.9113417001719747)),
+                        Row.of(
+                                0.0,
+                                Vectors.dense(2.698934129400492, -2.698934129400492),
+                                Vectors.dense(0.93696372005226, 0.06303627994773997)),
+                        Row.of(
+                                0.0,
+                                Vectors.dense(2.498686724271081, -2.498686724271081),
+                                Vectors.dense(0.9240497031720926, 0.07595029682790742)),
+                        Row.of(
+                                1.0,
+                                Vectors.dense(-2.0430165938442317, 2.0430165938442317),
+                                Vectors.dense(0.11475991971605914, 0.8852400802839409)),
+                        Row.of(
+                                0.0,
+                                Vectors.dense(2.5331110678994806, -2.5331110678994806),
+                                Vectors.dense(0.9264306755826702, 0.07356932441732977)),
+                        Row.of(
+                                1.0,
+                                Vectors.dense(-2.4934051174121428, 2.4934051174121428),
+                                Vectors.dense(0.07632180094495145, 0.9236781990550486)),
+                        Row.of(
+                                1.0,
+                                Vectors.dense(-2.660003232140888, 2.660003232140888),
+                                Vectors.dense(0.06537513593751931, 0.9346248640624807)));
         verifyPredictionResult(output, outputRows);
     }
 

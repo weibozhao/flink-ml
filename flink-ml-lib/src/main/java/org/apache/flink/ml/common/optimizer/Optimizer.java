@@ -19,10 +19,12 @@
 package org.apache.flink.ml.common.optimizer;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.ml.common.feature.LabeledPointWithWeight;
 import org.apache.flink.ml.common.lossfunc.LossFunc;
+import org.apache.flink.ml.common.ps.api.MLData;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.streaming.api.datastream.DataStream;
+
+import java.io.Serializable;
 
 /**
  * An optimizer is a function to modify the weight of a machine learning model, which aims to find
@@ -30,17 +32,13 @@ import org.apache.flink.streaming.api.datastream.DataStream;
  * stochastic gradient descent (SGD), L-BFGS, etc.
  */
 @Internal
-public interface Optimizer {
+public interface Optimizer extends Serializable {
     /**
      * Optimizes the given loss function using the initial model data and the bounded training data.
      *
-     * @param initModelData The initial model data.
-     * @param trainData The training data.
+     * @param mlData The input data.
      * @param lossFunc The loss function to optimize.
      * @return The fitted model data.
      */
-    DataStream<DenseVector> optimize(
-            DataStream<DenseVector> initModelData,
-            DataStream<LabeledPointWithWeight> trainData,
-            LossFunc lossFunc);
+    DataStream<DenseVector> optimize(MLData mlData, LossFunc lossFunc);
 }

@@ -20,18 +20,14 @@ package org.apache.flink.ml.feature.countvectorizer;
 
 import org.apache.flink.api.common.functions.AggregateFunction;
 import org.apache.flink.api.common.functions.MapFunction;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.ml.api.Estimator;
-import org.apache.flink.ml.common.datastream.DataStreamUtils;
+import org.apache.flink.ml.common.ps.api.MLData;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Preconditions;
 
@@ -68,26 +64,14 @@ public class CountVectorizer
             Preconditions.checkArgument(maxDF >= minDF, "maxDF must be >= minDF.");
         }
 
-        String inputCol = getInputCol();
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
-        DataStream<String[]> inputData =
-                tEnv.toDataStream(inputs[0])
-                        .map(
-                                (MapFunction<Row, String[]>)
-                                        value -> ((String[]) value.getField(inputCol)));
+        MLData mlData = MLData.of(inputs);
 
-        DataStream<CountVectorizerModelData> modelData =
-                DataStreamUtils.aggregate(
-                        inputData,
-                        new VocabularyAggregator(getMinDF(), getMaxDF(), getVocabularySize()),
-                        Types.TUPLE(
-                                Types.LONG,
-                                Types.MAP(Types.STRING, Types.TUPLE(Types.LONG, Types.LONG))),
-                        TypeInformation.of(CountVectorizerModelData.class));
+        mlData.map(
+                (MapFunction<Row, String[]>) value -> ((String[]) value.getField(getInputCol())));
+        mlData.aggregate(new VocabularyAggregator(getMinDF(), getMaxDF(), getVocabularySize()));
 
-        CountVectorizerModel model =
-                new CountVectorizerModel().setModelData(tEnv.fromDataStream(modelData));
+        CountVectorizerModel model = new CountVectorizerModel().setModelData(mlData.getTable());
+
         ParamUtils.updateExistingParams(model, getParamMap());
         return model;
     }

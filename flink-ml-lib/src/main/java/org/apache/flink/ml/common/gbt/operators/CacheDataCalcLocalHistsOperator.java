@@ -141,7 +141,10 @@ public class CacheDataCalcLocalHistsOperator
     public void processElement1(StreamRecord<Row> streamRecord) throws Exception {
         Row row = streamRecord.getValue();
         BinnedInstance instance = new BinnedInstance();
-        instance.weight = 1.;
+        instance.weight =
+                null != strategy.weightCol
+                        ? row.<Number>getFieldAs(strategy.weightCol).doubleValue()
+                        : 1.;
         instance.label = row.<Number>getFieldAs(strategy.labelCol).doubleValue();
 
         if (strategy.isInputVector) {
@@ -232,9 +235,10 @@ public class CacheDataCalcLocalHistsOperator
                         LossFunc loss = trainContext.loss;
                         for (int i = 0; i < instances.length; i += 1) {
                             double label = instances[i].label;
+                            double weight = instances[i].weight;
                             pgh[3 * i] = prior;
-                            pgh[3 * i + 1] = loss.gradient(prior, label);
-                            pgh[3 * i + 2] = loss.hessian(prior, label);
+                            pgh[3 * i + 1] = loss.gradient(prior, label) * weight;
+                            pgh[3 * i + 2] = loss.hessian(prior, label) * weight;
                         }
                     }
 

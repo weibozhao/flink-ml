@@ -18,21 +18,20 @@
 
 package org.apache.flink.ml.recommendation.als;
 
-import org.apache.flink.ml.common.ps.iterations.ProcessStage;
-import org.apache.flink.ml.common.ps.sarray.SharedDoubleArray;
+import org.apache.flink.ml.common.ps.iterations.ProcessComponent;
+import org.apache.flink.ml.common.ps.sarray.SharedFloatArray;
 import org.apache.flink.ml.common.ps.sarray.SharedLongArray;
 import org.apache.flink.ml.linalg.DenseMatrix;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.NormalEquationSolver;
 
 import java.io.IOException;
-import java.util.Arrays;
 
 /**
  * An iteration stage that uses the pulled least square matrices and vector data to compute the
  * factors.
  */
-public class UpdateHotPointFactors extends ProcessStage<AlsMLSession> {
+public class UpdateHotPointFactors extends ProcessComponent<AlsMLSession> {
     private final boolean nonNegative;
     private final int rank;
 
@@ -45,14 +44,14 @@ public class UpdateHotPointFactors extends ProcessStage<AlsMLSession> {
     public void process(AlsMLSession session) throws IOException {
         session.log(this.getClass().getSimpleName(), true);
         SharedLongArray indices = session.pullIndices;
-        SharedDoubleArray modelValues = session.pullValues;
+        SharedFloatArray modelValues = session.pullValues;
         session.pushIndices.clear();
         session.pushValues.clear();
         if (session.batchData.numSplitNodeIds != 0) {
             session.pushIndices.size(session.batchData.numSplitNodeIds);
             session.pushValues.size(session.batchData.numSplitNodeIds * rank);
         } else {
-            session.pushValues.addAll(new double[rank]);
+            session.pushValues.addAll(new float[rank]);
             session.pushIndices.add(Long.MIN_VALUE);
             return;
         }
@@ -64,22 +63,24 @@ public class UpdateHotPointFactors extends ProcessStage<AlsMLSession> {
             }
             DenseVector x = new DenseVector(rank);
 
-            DenseMatrix ata =
-                    new DenseMatrix(
-                            rank,
-                            rank,
-                            Arrays.copyOfRange(
-                                    modelValues.elements(), i * offset, i * offset + rank * rank));
-            DenseVector atb =
-                    new DenseVector(
-                            Arrays.copyOfRange(
-                                    modelValues.elements(),
-                                    i * offset + rank * rank,
-                                    (i + 1) * offset));
+            double[] matVals = new double[rank * rank];
+            for (int j = 0; j < rank * rank; ++j) {
+                matVals[j] = modelValues.elements()[i * offset + j];
+            }
+
+            DenseMatrix ata = new DenseMatrix(rank, rank, matVals);
+
+            double[] vecVals = new double[rank];
+            for (int j = 0; j < rank; ++j) {
+                vecVals[j] = modelValues.elements()[i * offset + rank * rank + j];
+            }
+
+            DenseVector atb = new DenseVector(vecVals);
             NormalEquationSolver ls = new NormalEquationSolver(rank, ata, atb);
             ls.solve(x, nonNegative);
-            System.arraycopy(x.values, 0, session.pushValues.elements(), i * rank, rank);
-
+            for (int j = 0; j < rank; ++j) {
+                session.pushValues.elements()[i * rank + j] = (float) x.values[j];
+            }
             if (session.pullIndices.get(i) != Long.MIN_VALUE) {
                 session.pushIndices.elements()[i] = -session.pullIndices.elements()[i] - 1;
             } else {

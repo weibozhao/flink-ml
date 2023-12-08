@@ -21,6 +21,7 @@ package org.apache.flink.ml.clustering;
 import org.apache.flink.ml.clustering.kmeans.KMeans;
 import org.apache.flink.ml.clustering.kmeans.KMeansModel;
 import org.apache.flink.ml.clustering.kmeans.KMeansModelData;
+import org.apache.flink.ml.clustering.kmeans.KMeansModelDataUtil;
 import org.apache.flink.ml.common.distance.EuclideanDistanceMeasure;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.SparseVector;
@@ -87,6 +88,7 @@ public class KMeansTest extends AbstractTestBase {
     @Before
     public void before() {
         env = TestUtils.getExecutionEnvironment();
+        env.getConfig().enableGenericTypes();
         tEnv = StreamTableEnvironment.create(env);
         dataTable = tEnv.fromDataStream(env.fromCollection(DATA)).as("features");
     }
@@ -241,7 +243,7 @@ public class KMeansTest extends AbstractTestBase {
                 model.getModelData()[0].getResolvedSchema().getColumnNames());
 
         DataStream<KMeansModelData> modelData =
-                KMeansModelData.getModelDataStream(model.getModelData()[0]);
+                KMeansModelDataUtil.getModelDataStream(model.getModelData()[0]);
         List<KMeansModelData> collectedModelData =
                 IteratorUtils.toList(modelData.executeAndCollect());
         assertEquals(1, collectedModelData.size());

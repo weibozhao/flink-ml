@@ -18,22 +18,22 @@
 
 package org.apache.flink.ml.classification.logisticregression;
 
+import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.ml.api.Estimator;
-import org.apache.flink.ml.common.datastream.DataStreamUtils;
+import org.apache.flink.ml.classification.linearsvc.LinearSVC.ParseSample;
 import org.apache.flink.ml.common.feature.LabeledPointWithWeight;
 import org.apache.flink.ml.common.lossfunc.BinaryLogisticLoss;
-import org.apache.flink.ml.common.optimizer.Optimizer;
-import org.apache.flink.ml.common.optimizer.SGD;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
+import org.apache.flink.ml.common.ps.api.OptimizerComponent;
+import org.apache.flink.ml.common.ps.api.OptimizerComponent.Method;
 import org.apache.flink.ml.linalg.DenseVector;
-import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
@@ -63,61 +63,67 @@ public class LogisticRegression
         Preconditions.checkArgument(
                 "auto".equals(classificationType) || "binomial".equals(classificationType),
                 "Multinomial classification is not supported yet. Supported options: [auto, binomial].");
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
+        String dataName = "data";
+        String modelName = "modelName";
+        MLData mlData = MLData.of(inputs, new String[] {dataName});
+        // AlgorithmFlow algoFlow = new AlgorithmFlow();
 
-        DataStream<LabeledPointWithWeight> trainData =
-                tEnv.toDataStream(inputs[0])
-                        .map(
-                                dataPoint -> {
-                                    double weight =
-                                            getWeightCol() == null
-                                                    ? 1.0
-                                                    : ((Number) dataPoint.getField(getWeightCol()))
-                                                            .doubleValue();
-                                    double label =
-                                            ((Number) dataPoint.getField(getLabelCol()))
-                                                    .doubleValue();
-                                    boolean isBinomial =
-                                            Double.compare(0., label) == 0
-                                                    || Double.compare(1., label) == 0;
-                                    if (!isBinomial) {
-                                        throw new RuntimeException(
-                                                "Multinomial classification is not supported yet. Supported options: [auto, binomial].");
-                                    }
-                                    DenseVector features =
-                                            ((Vector) dataPoint.getField(getFeaturesCol()))
-                                                    .toDense();
-                                    return new LabeledPointWithWeight(features, label, weight);
-                                });
+        // algoFlow.add(new ParseSample(getLabelCol(), getWeightCol(), getFeaturesCol()))
+        //        .add(
+        //                new MapComponent<LabeledPointWithWeight, Integer>(
+        //                                x -> x.getFeatures().size())
+        //                        .output(modelName))
+        //        .add(
+        //                new ReduceComponent<Integer>() {
+        //                    @Override
+        //                    public Integer reduce(Integer t0, Integer t1) {
+        //                        Preconditions.checkState(
+        //                                t0.equals(t1),
+        //                                "The training data should all have same dimensions.");
+        //                        return t0;
+        //                    }
+        //                })
+        //        .add(new MapComponent<Integer, DenseVector>(DenseVector::new))
+        //        .add(
+        //                new OptimizerComponent(paramMap, Method.SGD, BinaryLogisticLoss.INSTANCE)
+        //                        .withInitModel(modelName)
+        //                        .input(dataName)
+        //                        .output(modelName))
+        //        .add(
+        //                new MapComponent<DenseVector, LogisticRegressionModelData>() {
+        //                    @Override
+        //                    public LogisticRegressionModelData map(DenseVector denseVector) {
+        //                        return new LogisticRegressionModelData(denseVector, 0L);
+        //                    }
+        //                });
 
-        DataStream<DenseVector> initModelData =
-                DataStreamUtils.reduce(
-                                trainData.map(x -> x.getFeatures().size()),
-                                (ReduceFunction<Integer>)
-                                        (t0, t1) -> {
-                                            Preconditions.checkState(
-                                                    t0.equals(t1),
-                                                    "The training data should all have same dimensions.");
-                                            return t0;
-                                        })
-                        .map(DenseVector::new);
+        mlData.map(new ParseSample(getLabelCol(), getWeightCol(), getFeaturesCol()));
+        mlData.map(
+                null,
+                modelName,
+                (MapFunction<LabeledPointWithWeight, Integer>) (x -> x.getFeatures().size()));
+        new MLDataFunction(
+                        "reduce",
+                        (ReduceFunction<Integer>)
+                                (t0, t1) -> {
+                                    Preconditions.checkState(
+                                            t0.equals(t1),
+                                            "The training data should all have same dimensions.");
+                                    return t0;
+                                })
+                .apply(mlData);
+        mlData.map((MapFunction<Integer, DenseVector>) (DenseVector::new));
+        new OptimizerComponent(paramMap, Method.SGD, BinaryLogisticLoss.INSTANCE)
+                .withInitModel(modelName)
+                .input(dataName)
+                .output(modelName)
+                .apply(mlData);
+        mlData.map(
+                (MapFunction<DenseVector, LogisticRegressionModelData>)
+                        denseVector -> new LogisticRegressionModelData(denseVector, 0L));
 
-        Optimizer optimizer =
-                new SGD(
-                        getMaxIter(),
-                        getLearningRate(),
-                        getGlobalBatchSize(),
-                        getTol(),
-                        getReg(),
-                        getElasticNet());
-        DataStream<DenseVector> rawModelData =
-                optimizer.optimize(initModelData, trainData, BinaryLogisticLoss.INSTANCE);
-
-        DataStream<LogisticRegressionModelData> modelData =
-                rawModelData.map(vector -> new LogisticRegressionModelData(vector, 0L));
         LogisticRegressionModel model =
-                new LogisticRegressionModel().setModelData(tEnv.fromDataStream(modelData));
+                new LogisticRegressionModel().setModelData(mlData.getTable(modelName));
         ParamUtils.updateExistingParams(model, paramMap);
         return model;
     }

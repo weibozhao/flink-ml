@@ -22,27 +22,26 @@ import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.ml.api.Model;
-import org.apache.flink.ml.clustering.kmeans.KMeansModelData.ModelDataDecoder;
-import org.apache.flink.ml.common.broadcast.BroadcastUtils;
+import org.apache.flink.ml.clustering.kmeans.KMeansModelDataUtil.ModelDataDecoder;
 import org.apache.flink.ml.common.datastream.TableUtils;
 import org.apache.flink.ml.common.distance.DistanceMeasure;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
+import org.apache.flink.ml.common.ps.api.ModelParseComponent;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.linalg.VectorWithNorm;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.commons.lang3.ArrayUtils;
 
 import java.io.IOException;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -68,45 +67,39 @@ public class KMeansModel implements Model<KMeansModel>, KMeansModelParams<KMeans
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public Table[] transform(Table... inputs) {
         Preconditions.checkArgument(inputs.length == 1);
 
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
-        DataStream<KMeansModelData> modelDataStream =
-                KMeansModelData.getModelDataStream(modelDataTable);
+        MLData mlData =
+                MLData.of(new Table[] {inputs[0], modelDataTable}, new String[] {"data", "model"});
 
         RowTypeInfo inputTypeInfo = TableUtils.getRowTypeInfo(inputs[0].getResolvedSchema());
         RowTypeInfo outputTypeInfo =
                 new RowTypeInfo(
                         ArrayUtils.addAll(inputTypeInfo.getFieldTypes(), Types.INT),
                         ArrayUtils.addAll(inputTypeInfo.getFieldNames(), getPredictionCol()));
-        final String broadcastModelKey = "broadcastModelKey";
-        DataStream<Row> predictionResult =
-                BroadcastUtils.withBroadcastStream(
-                        Collections.singletonList(tEnv.toDataStream(inputs[0])),
-                        Collections.singletonMap(broadcastModelKey, modelDataStream),
-                        inputList -> {
-                            DataStream inputData = inputList.get(0);
-                            return inputData.map(
-                                    new PredictLabelFunction(
-                                            broadcastModelKey,
-                                            getFeaturesCol(),
-                                            DistanceMeasure.getInstance(getDistanceMeasure()),
-                                            getK()),
-                                    outputTypeInfo);
-                        });
 
-        return new Table[] {tEnv.fromDataStream(predictionResult)};
+        mlData = new ModelParseComponent<>("model", KMeansModelData.class).apply(mlData);
+        mlData =
+                new MLDataFunction(
+                                "map",
+                                new PredictComponent(
+                                        getFeaturesCol(),
+                                        DistanceMeasure.getInstance(getDistanceMeasure()),
+                                        getK(),
+                                        "model"))
+                        .withBroadcast("model")
+                        .returns(outputTypeInfo)
+                        .apply(mlData);
+
+        return mlData.slice("data").getTables();
     }
 
     /** A utility function used for prediction. */
-    private static class PredictLabelFunction extends RichMapFunction<Row, Row> {
-
-        private final String broadcastModelKey;
+    private static class PredictComponent extends RichMapFunction<Row, Row> {
 
         private final String featuresCol;
+        private String broadcastName;
 
         private final DistanceMeasure distanceMeasure;
 
@@ -114,15 +107,12 @@ public class KMeansModel implements Model<KMeansModel>, KMeansModelParams<KMeans
 
         private VectorWithNorm[] centroids;
 
-        public PredictLabelFunction(
-                String broadcastModelKey,
-                String featuresCol,
-                DistanceMeasure distanceMeasure,
-                int k) {
-            this.broadcastModelKey = broadcastModelKey;
+        public PredictComponent(
+                String featuresCol, DistanceMeasure distanceMeasure, int k, String broadcastName) {
             this.featuresCol = featuresCol;
             this.distanceMeasure = distanceMeasure;
             this.k = k;
+            this.broadcastName = broadcastName;
         }
 
         @Override
@@ -130,7 +120,7 @@ public class KMeansModel implements Model<KMeansModel>, KMeansModelParams<KMeans
             if (centroids == null) {
                 KMeansModelData modelData =
                         (KMeansModelData)
-                                getRuntimeContext().getBroadcastVariable(broadcastModelKey).get(0);
+                                getRuntimeContext().getBroadcastVariable(broadcastName).get(0);
                 Preconditions.checkArgument(modelData.centroids.length <= k);
                 centroids = new VectorWithNorm[modelData.centroids.length];
                 for (int i = 0; i < modelData.centroids.length; i++) {
@@ -152,9 +142,9 @@ public class KMeansModel implements Model<KMeansModel>, KMeansModelParams<KMeans
     @Override
     public void save(String path) throws IOException {
         ReadWriteUtils.saveModelData(
-                KMeansModelData.getModelDataStream(modelDataTable),
+                KMeansModelDataUtil.getModelDataStream(modelDataTable),
                 path,
-                new KMeansModelData.ModelDataEncoder());
+                new KMeansModelDataUtil.ModelDataEncoder());
         ReadWriteUtils.saveMetadata(this, path);
     }
 

@@ -93,6 +93,7 @@ public class KnnTest extends AbstractTestBase {
     @Before
     public void before() {
         env = TestUtils.getExecutionEnvironment();
+        env.getConfig().enableGenericTypes();
         tEnv = StreamTableEnvironment.create(env);
         Schema schema =
                 Schema.newBuilder()

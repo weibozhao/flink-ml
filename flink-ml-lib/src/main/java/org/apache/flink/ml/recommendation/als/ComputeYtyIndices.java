@@ -18,10 +18,10 @@
 
 package org.apache.flink.ml.recommendation.als;
 
-import org.apache.flink.ml.common.ps.iterations.ProcessStage;
+import org.apache.flink.ml.common.ps.iterations.ProcessComponent;
 
 /** An iteration stage that calculates the indices for yty matrix computing. */
-public class ComputeYtyIndices extends ProcessStage<AlsMLSession> {
+public class ComputeYtyIndices extends ProcessComponent<AlsMLSession> {
 
     @Override
     public void process(AlsMLSession session) throws Exception {

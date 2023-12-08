@@ -464,6 +464,7 @@ public class UnivariateFeatureSelectorTest extends AbstractTestBase {
     @Before
     public void before() {
         env = TestUtils.getExecutionEnvironment();
+        env.getConfig().enableGenericTypes();
         tEnv = StreamTableEnvironment.create(env);
 
         selectorWithChiSqTest =

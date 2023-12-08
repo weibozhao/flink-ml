@@ -47,6 +47,9 @@ public class BoostingStrategy implements Serializable {
      */
     public String[] categoricalCols;
 
+    /** Name of column which represents the weights of instances. */
+    public String weightCol;
+
     /**
      * Max depth of the tree (root node is the 1st level). Depth 1 means 1 leaf node, i.e., the root
      * node; Depth 2 means 1 internal node + 2 leaf nodes; etc.

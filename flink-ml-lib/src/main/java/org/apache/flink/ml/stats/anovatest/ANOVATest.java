@@ -24,19 +24,19 @@ import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
+import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.ml.api.AlgoOperator;
-import org.apache.flink.ml.common.datastream.DataStreamUtils;
 import org.apache.flink.ml.common.param.HasFlatten;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.linalg.typeinfo.VectorTypeInfo;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Preconditions;
 
@@ -87,38 +87,67 @@ public class ANOVATest implements AlgoOperator<ANOVATest>, ANOVATestParams<ANOVA
     @Override
     public Table[] transform(Table... inputs) {
         Preconditions.checkArgument(inputs.length == 1);
+        MLData mlData = MLData.of(inputs);
 
-        final String featuresCol = getFeaturesCol();
-        final String labelCol = getLabelCol();
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
+        mlData.map(new ParseRow(getLabelCol(), getFeaturesCol()));
+        mlData = new MLDataFunction("aggregate", new ANOVAAggregator()).apply(mlData);
 
-        DataStream<Tuple2<Vector, Double>> inputData =
-                tEnv.toDataStream(inputs[0])
-                        .map(
-                                (MapFunction<Row, Tuple2<Vector, Double>>)
-                                        row -> {
-                                            Number number = (Number) row.getField(labelCol);
-                                            Preconditions.checkNotNull(
-                                                    number, "Input data must contain label value.");
-                                            return new Tuple2<>(
-                                                    ((Vector) row.getField(featuresCol)),
-                                                    number.doubleValue());
-                                        },
-                                Types.TUPLE(VectorTypeInfo.INSTANCE, Types.DOUBLE));
-        DataStream<List<Row>> streamWithANOVA =
-                DataStreamUtils.aggregate(
-                        inputData,
-                        new ANOVAAggregator(),
-                        Types.OBJECT_ARRAY(
-                                Types.TUPLE(
-                                        Types.DOUBLE,
-                                        Types.DOUBLE,
-                                        Types.MAP(
-                                                Types.DOUBLE,
-                                                Types.TUPLE(Types.DOUBLE, Types.LONG)))),
-                        Types.LIST(Types.ROW(Types.INT, Types.DOUBLE, Types.LONG, Types.DOUBLE)));
-        return new Table[] {convertToTable(tEnv, streamWithANOVA, getFlatten())};
+        if (getFlatten()) {
+            mlData =
+                    new MLDataFunction(
+                                    "flatMap",
+                                    (FlatMapFunction<List<Row>, Row>)
+                                            (rows, collector) -> rows.forEach(collector::collect))
+                            .returns(
+                                    new RowTypeInfo(
+                                            Types.INT, Types.DOUBLE, Types.LONG, Types.DOUBLE))
+                            .apply(mlData);
+
+            return new Table[] {
+                mlData.getTables()[0].as("featureIndex", "pValue", "degreeOfFreedom", "fValue")
+            };
+        } else {
+            mlData.map(
+                    (MapFunction<List<Row>, Tuple3<DenseVector, long[], DenseVector>>)
+                            rows -> {
+                                int numOfFeatures = rows.size();
+                                DenseVector pValues = new DenseVector(numOfFeatures);
+                                DenseVector fValues = new DenseVector(numOfFeatures);
+                                long[] degrees = new long[numOfFeatures];
+
+                                for (int i = 0; i < numOfFeatures; i++) {
+                                    Row row = rows.get(i);
+                                    pValues.set(i, row.getFieldAs(1));
+                                    degrees[i] = row.getFieldAs(2);
+                                    fValues.set(i, row.getFieldAs(3));
+                                }
+                                return Tuple3.of(pValues, degrees, fValues);
+                            },
+                    Types.TUPLE(
+                            VectorTypeInfo.INSTANCE,
+                            Types.PRIMITIVE_ARRAY(Types.LONG),
+                            VectorTypeInfo.INSTANCE));
+
+            return new Table[] {mlData.getTables()[0].as("pValues", "degreesOfFreedom", "fValues")};
+        }
+    }
+
+    /** Comments. */
+    public static class ParseRow implements MapFunction<Row, Tuple2<Vector, Double>> {
+        private final String labelCol;
+        private final String featuresCol;
+
+        public ParseRow(String labelCol, String featuresCol) {
+            this.labelCol = labelCol;
+            this.featuresCol = featuresCol;
+        }
+
+        @Override
+        public Tuple2<Vector, Double> map(Row row) {
+            Number number = (Number) row.getField(labelCol);
+            Preconditions.checkNotNull(number, "Input data must contain label value.");
+            return new Tuple2<>(((Vector) row.getField(featuresCol)), number.doubleValue());
+        }
     }
 
     /** Computes the p-value, fValues and the number of degrees of freedom of input features. */
@@ -241,43 +270,6 @@ public class ANOVATest implements AlgoOperator<ANOVATest>, ANOVATestParams<ANOVA
             long degreeOfFreedom = degreeOfFreedomBetween + degreeOfFreedomWithin;
 
             return Tuple3.of(pValue, degreeOfFreedom, fValue);
-        }
-    }
-
-    private Table convertToTable(
-            StreamTableEnvironment tEnv, DataStream<List<Row>> datastream, boolean flatten) {
-        if (flatten) {
-            DataStream<Row> output =
-                    datastream
-                            .flatMap(
-                                    (FlatMapFunction<List<Row>, Row>)
-                                            (list, collector) -> list.forEach(collector::collect))
-                            .setParallelism(1)
-                            .returns(Types.ROW(Types.INT, Types.DOUBLE, Types.LONG, Types.DOUBLE));
-            return tEnv.fromDataStream(output)
-                    .as("featureIndex", "pValue", "degreeOfFreedom", "fValue");
-        } else {
-            DataStream<Tuple3<DenseVector, long[], DenseVector>> output =
-                    datastream.map(
-                            new MapFunction<List<Row>, Tuple3<DenseVector, long[], DenseVector>>() {
-                                @Override
-                                public Tuple3<DenseVector, long[], DenseVector> map(
-                                        List<Row> rows) {
-                                    int numOfFeatures = rows.size();
-                                    DenseVector pValues = new DenseVector(numOfFeatures);
-                                    DenseVector fValues = new DenseVector(numOfFeatures);
-                                    long[] degrees = new long[numOfFeatures];
-
-                                    for (int i = 0; i < numOfFeatures; i++) {
-                                        Row row = rows.get(i);
-                                        pValues.set(i, (double) row.getField(1));
-                                        degrees[i] = (long) row.getField(2);
-                                        fValues.set(i, (double) row.getField(3));
-                                    }
-                                    return Tuple3.of(pValues, degrees, fValues);
-                                }
-                            });
-            return tEnv.fromDataStream(output).as("pValues", "degreesOfFreedom", "fValues");
         }
     }
 

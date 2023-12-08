@@ -23,21 +23,20 @@ import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.typeutils.ObjectArrayTypeInfo;
-import org.apache.flink.api.java.typeutils.RowTypeInfo;
-import org.apache.flink.iteration.DataStreamList;
-import org.apache.flink.iteration.IterationBody;
-import org.apache.flink.iteration.IterationBodyResult;
-import org.apache.flink.iteration.Iterations;
 import org.apache.flink.iteration.operator.OperatorStateUtils;
 import org.apache.flink.ml.api.Estimator;
-import org.apache.flink.ml.common.datastream.DataStreamUtils;
-import org.apache.flink.ml.common.datastream.TableUtils;
+import org.apache.flink.ml.common.ps.api.AlgorithmFlow;
+import org.apache.flink.ml.common.ps.api.CoTransformComponent;
+import org.apache.flink.ml.common.ps.api.MLData;
+import org.apache.flink.ml.common.ps.api.MLData.MLDataFunction;
+import org.apache.flink.ml.common.ps.api.MiniBatchComponent;
+import org.apache.flink.ml.common.ps.api.TransformComponent;
 import org.apache.flink.ml.linalg.BLAS;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.linalg.Vector;
+import org.apache.flink.ml.linalg.typeinfo.DenseVectorTypeInfo;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
@@ -45,14 +44,9 @@ import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
-import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
-import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
-import org.apache.flink.streaming.api.operators.TwoInputStreamOperator;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Preconditions;
 
@@ -85,52 +79,78 @@ public class OnlineLogisticRegression
     @Override
     public OnlineLogisticRegressionModel fit(Table... inputs) {
         Preconditions.checkArgument(inputs.length == 1);
+        MLData mlData =
+                new MLData(
+                        new Table[] {inputs[0], initModelDataTable},
+                        new String[] {"data", "initModel"});
 
-        StreamTableEnvironment tEnv =
-                (StreamTableEnvironment) ((TableImpl) inputs[0]).getTableEnvironment();
-        DataStream<LogisticRegressionModelData> modelDataStream =
-                LogisticRegressionModelDataUtil.getModelDataStream(initModelDataTable);
+        AlgorithmFlow flow =
+                new AlgorithmFlow(false)
+                        .add(
+                                new MLDataFunction(
+                                        "map",
+                                        new FeaturesLabelExtractor(
+                                                getFeaturesCol(), getLabelCol(), getWeightCol())))
+                        .add(
+                                new MLDataFunction(
+                                                "map",
+                                                (MapFunction<Row, DenseVector>)
+                                                        x ->
+                                                                (new LogisticRegressionModelData(
+                                                                                x.getFieldAs(0),
+                                                                                x.getFieldAs(1)))
+                                                                        .coefficient)
+                                        .withParallel(1)
+                                        .input("initModel")
+                                        .output("initModel"))
+                        .startIteration(new String[] {"initModel"}, new String[] {"data"}, false)
+                        .add(new MiniBatchComponent(getGlobalBatchSize()))
+                        .add(new MLDataFunction("broadcast").input("initModel").output("initModel"))
+                        .add(
+                                new CalculateLocalGradient()
+                                        .input("data")
+                                        .with("initModel")
+                                        .output("grad")
+                                        .returns(TypeInformation.of(DenseVector[].class)))
+                        .add(
+                                new MLDataFunction(
+                                                "reduce",
+                                                new ReduceFunction<DenseVector[]>() {
+                                                    @Override
+                                                    public DenseVector[] reduce(
+                                                            DenseVector[] gradientInfo,
+                                                            DenseVector[] newGradientInfo) {
+                                                        BLAS.axpy(
+                                                                1.0,
+                                                                gradientInfo[0],
+                                                                newGradientInfo[0]);
+                                                        BLAS.axpy(
+                                                                1.0,
+                                                                gradientInfo[1],
+                                                                newGradientInfo[1]);
+                                                        if (newGradientInfo[2] == null) {
+                                                            newGradientInfo[2] = gradientInfo[2];
+                                                        }
+                                                        return newGradientInfo;
+                                                    }
+                                                })
+                                        .isOnine(true))
+                        .add(
+                                new UpdateModel(
+                                                getAlpha(),
+                                                getBeta(),
+                                                getReg() * getElasticNet(),
+                                                (1 - getElasticNet()) * getReg())
+                                        .withParallel(1)
+                                        .returns(DenseVectorTypeInfo.INSTANCE))
+                        .add(
+                                new MLDataFunction("map", new CreateLrModelData())
+                                        .withParallel(1)
+                                        .input("grad")
+                                        .output("outModel"))
+                        .endIteration(new String[] {"grad", "outModel"}, false);
 
-        RowTypeInfo inputTypeInfo = TableUtils.getRowTypeInfo(inputs[0].getResolvedSchema());
-        TypeInformation pointTypeInfo;
-
-        if (getWeightCol() == null) {
-            pointTypeInfo =
-                    Types.ROW(
-                            inputTypeInfo.getTypeAt(getFeaturesCol()),
-                            inputTypeInfo.getTypeAt(getLabelCol()));
-        } else {
-            pointTypeInfo =
-                    Types.ROW(
-                            inputTypeInfo.getTypeAt(getFeaturesCol()),
-                            inputTypeInfo.getTypeAt(getLabelCol()),
-                            inputTypeInfo.getTypeAt(getWeightCol()));
-        }
-
-        DataStream<Row> points =
-                tEnv.toDataStream(inputs[0])
-                        .map(
-                                new FeaturesLabelExtractor(
-                                        getFeaturesCol(), getLabelCol(), getWeightCol()),
-                                pointTypeInfo);
-
-        DataStream<DenseVector> initModelData =
-                modelDataStream.map(
-                        (MapFunction<LogisticRegressionModelData, DenseVector>)
-                                value -> value.coefficient);
-
-        initModelData.getTransformation().setParallelism(1);
-
-        IterationBody body =
-                new FtrlIterationBody(
-                        getGlobalBatchSize(), getAlpha(), getBeta(), getReg(), getElasticNet());
-
-        DataStream<LogisticRegressionModelData> onlineModelData =
-                Iterations.iterateUnboundedStreams(
-                                DataStreamList.of(initModelData), DataStreamList.of(points), body)
-                        .get(0);
-
-        Table onlineModelDataTable = tEnv.fromDataStream(onlineModelData);
+        Table onlineModelDataTable = flow.apply(mlData).getTable();
         OnlineLogisticRegressionModel model =
                 new OnlineLogisticRegressionModel().setModelData(onlineModelDataTable);
         ParamUtils.updateExistingParams(model, paramMap);
@@ -159,83 +179,10 @@ public class OnlineLogisticRegression
         }
     }
 
-    /**
-     * In the implementation of ftrl optimizer, gradients are calculated in distributed workers and
-     * reduce them to one final gradient. The reduced gradient is used to update model by ftrl
-     * method. When the feature vector is dense, it can get the same result as tensorflow's ftrl. If
-     * feature vector is sparse, we use the mean value in every feature dim instead of mean value of
-     * whole vector, which can get a better convergence.
-     *
-     * <p>See https://www.tensorflow.org/api_docs/python/tf/keras/optimizers/Ftrl
-     *
-     * <p>todo: makes ftrl to be a common optimizer and place it in org.apache.flink.ml.common.
-     */
-    private static class FtrlIterationBody implements IterationBody {
-        private final int batchSize;
-        private final double alpha;
-        private final double beta;
-        private final double l1;
-        private final double l2;
-
-        public FtrlIterationBody(
-                int batchSize, double alpha, double beta, double reg, double elasticNet) {
-            this.batchSize = batchSize;
-            this.alpha = alpha;
-            this.beta = beta;
-            this.l1 = elasticNet * reg;
-            this.l2 = (1 - elasticNet) * reg;
-        }
-
-        @Override
-        public IterationBodyResult process(
-                DataStreamList variableStreams, DataStreamList dataStreams) {
-            DataStream<DenseVector> modelData = variableStreams.get(0);
-
-            DataStream<Row> points = dataStreams.get(0);
-            int parallelism = points.getParallelism();
-            Preconditions.checkState(
-                    parallelism <= batchSize,
-                    "There are more subtasks in the training process than the number "
-                            + "of elements in each batch. Some subtasks might be idling forever.");
-
-            DataStream<DenseVector[]> newGradient =
-                    DataStreamUtils.generateBatchData(points, parallelism, batchSize)
-                            .connect(modelData.broadcast())
-                            .transform(
-                                    "LocalGradientCalculator",
-                                    TypeInformation.of(DenseVector[].class),
-                                    new CalculateLocalGradient())
-                            .setParallelism(parallelism)
-                            .countWindowAll(parallelism)
-                            .reduce(
-                                    (ReduceFunction<DenseVector[]>)
-                                            (gradientInfo, newGradientInfo) -> {
-                                                BLAS.axpy(1.0, gradientInfo[0], newGradientInfo[0]);
-                                                BLAS.axpy(1.0, gradientInfo[1], newGradientInfo[1]);
-                                                if (newGradientInfo[2] == null) {
-                                                    newGradientInfo[2] = gradientInfo[2];
-                                                }
-                                                return newGradientInfo;
-                                            });
-            DataStream<DenseVector> feedbackModelData =
-                    newGradient
-                            .transform(
-                                    "ModelDataUpdater",
-                                    TypeInformation.of(DenseVector.class),
-                                    new UpdateModel(alpha, beta, l1, l2))
-                            .setParallelism(1);
-
-            DataStream<LogisticRegressionModelData> outputModelData =
-                    feedbackModelData.map(new CreateLrModelData()).setParallelism(1);
-            return new IterationBodyResult(
-                    DataStreamList.of(feedbackModelData), DataStreamList.of(outputModelData));
-        }
-    }
-
     private static class CreateLrModelData
             implements MapFunction<DenseVector, LogisticRegressionModelData>, CheckpointedFunction {
         private Long modelVersion = 1L;
-        private transient ListState<Long> modelVersionState;
+        protected transient ListState modelVersionState;
 
         @Override
         public LogisticRegressionModelData map(DenseVector denseVector) throws Exception {
@@ -258,8 +205,7 @@ public class OnlineLogisticRegression
     }
 
     /** Updates model. */
-    private static class UpdateModel extends AbstractStreamOperator<DenseVector>
-            implements OneInputStreamOperator<DenseVector[], DenseVector> {
+    private static class UpdateModel extends TransformComponent<DenseVector[], DenseVector> {
         private ListState<double[]> nParamState;
         private ListState<double[]> zParamState;
         private final double alpha;
@@ -321,8 +267,8 @@ public class OnlineLogisticRegression
         }
     }
 
-    private static class CalculateLocalGradient extends AbstractStreamOperator<DenseVector[]>
-            implements TwoInputStreamOperator<Row[], DenseVector, DenseVector[]> {
+    private static class CalculateLocalGradient
+            extends CoTransformComponent<Row[], DenseVector, DenseVector[]> {
         private ListState<DenseVector> modelDataState;
         private ListState<Row[]> localBatchDataState;
         private double[] gradient;
@@ -348,11 +294,18 @@ public class OnlineLogisticRegression
             calculateGradient();
         }
 
+        @Override
+        public void processElement2(StreamRecord<DenseVector> modelDataRecord) throws Exception {
+            modelDataState.add(modelDataRecord.getValue());
+            calculateGradient();
+        }
+
         private void calculateGradient() throws Exception {
             if (!modelDataState.get().iterator().hasNext()
                     || !localBatchDataState.get().iterator().hasNext()) {
                 return;
             }
+
             DenseVector modelData =
                     OperatorStateUtils.getUniqueElement(modelDataState, "modelData").get();
             modelDataState.clear();
@@ -372,16 +325,16 @@ public class OnlineLogisticRegression
                 double p = BLAS.dot(modelData, vec);
                 p = 1 / (1 + Math.exp(-p));
                 if (vec instanceof DenseVector) {
-                    DenseVector dvec = (DenseVector) vec;
+                    DenseVector denseVector = (DenseVector) vec;
                     for (int i = 0; i < modelData.size(); ++i) {
-                        gradient[i] += (p - label) * dvec.values[i];
+                        gradient[i] += (p - label) * denseVector.values[i];
                         weightSum[i] += 1.0;
                     }
                 } else {
-                    SparseVector svec = (SparseVector) vec;
-                    for (int i = 0; i < svec.indices.length; ++i) {
-                        int idx = svec.indices[i];
-                        gradient[idx] += (p - label) * svec.values[i];
+                    SparseVector sparseVector = (SparseVector) vec;
+                    for (int i = 0; i < sparseVector.indices.length; ++i) {
+                        int idx = sparseVector.indices[i];
+                        gradient[idx] += (p - label) * sparseVector.values[i];
                         weightSum[idx] += weight;
                     }
                 }
@@ -400,12 +353,6 @@ public class OnlineLogisticRegression
             }
             Arrays.fill(gradient, 0.0);
             Arrays.fill(weightSum, 0.0);
-        }
-
-        @Override
-        public void processElement2(StreamRecord<DenseVector> modelDataRecord) throws Exception {
-            modelDataState.add(modelDataRecord.getValue());
-            calculateGradient();
         }
     }
 
